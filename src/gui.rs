@@ -133,7 +133,15 @@ fn build_ui(
     main_box.append(&input_clamp);
 
     let toolbar_view = ToolbarView::new();
-    toolbar_view.add_top_bar(&HeaderBar::new());
+    let header = HeaderBar::new();
+    let system_list = gtk::StringList::new(&["Desktop", "Server", "Core", "WSL", "Flavors"]);
+    let system_dropdown = gtk::DropDown::builder()
+        .model(&system_list)
+        .selected(0)
+        .css_classes(["flat"])
+        .build();
+    header.pack_end(&system_dropdown);
+    toolbar_view.add_top_bar(&header);
     toolbar_view.set_content(Some(&main_box));
     window.set_content(Some(&toolbar_view));
 
