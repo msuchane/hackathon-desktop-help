@@ -1,0 +1,33 @@
+name: ubuntu-desktop-help
+base: core24
+version: '0.1.0'
+summary: AI-powered Ubuntu Desktop help CLI
+description: |
+  An interactive CLI tool that answers questions about Ubuntu Desktop
+  using local documentation and a large language model. Supports both
+  a local Ollama backend and the GitHub Copilot / GitHub Models API.
+
+grade: devel
+confinement: strict
+
+apps:
+  ubuntu-desktop-help:
+    command: bin/ubuntu-desktop-help
+    plugs:
+      - network          # Ollama / Copilot API calls
+      - home             # reading config/token files under $HOME
+
+parts:
+  ubuntu-desktop-help:
+    plugin: rust
+    source: .
+    build-packages:
+      - git              # required by build.rs to clone documentation repos
+      - pkg-config
+      - libssl-dev
+    stage-packages:
+      - libssl3t64
+      - ca-certificates
+    override-build: |
+      # Only check that the code compiles; do not produce a binary.
+      cargo check --release
