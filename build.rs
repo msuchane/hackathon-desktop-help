@@ -27,10 +27,20 @@ fn main() -> anyhow::Result<()> {
     // watching it would cause an infinite rebuild loop.
     println!("cargo:rerun-if-changed=build.rs");
 
-    clone_or_update_repos("docs")?;
-
     let out_dir = env::var("OUT_DIR")?;
     let index_path = Path::new(&out_dir).join("index.bin");
+
+    // In debug builds, skip cloning and embedding entirely — write an empty index
+    // so the app compiles and runs (with no RAG context). Use `cargo build --release`
+    // for a fully functional binary.
+    let profile = env::var("PROFILE").unwrap_or_default();
+    if profile == "debug" {
+        println!("cargo:warning=Debug build: skipping doc cloning and vectorisation (empty RAG index).");
+        write_index(&index_path, EMBEDDING_DIM, &[], &[])?;
+        return Ok(());
+    }
+
+    clone_or_update_repos("docs")?;
 
     let chunks = load_chunks("docs");
 
