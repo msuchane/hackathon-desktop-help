@@ -155,6 +155,7 @@ fn append_bubble(message_list: &Box, text: &str, is_user: bool) {
     let label = Label::builder()
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .max_width_chars(55)
         .xalign(if is_user { 1.0 } else { 0.0 })
         .halign(if is_user { gtk::Align::End } else { gtk::Align::Start })
         .selectable(true)
