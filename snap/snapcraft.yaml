@@ -1,5 +1,5 @@
 name: ubuntu-desktop-help
-base: core24
+base: core26
 version: '0.1.0'
 summary: AI-powered Ubuntu Desktop help CLI
 description: |
@@ -28,6 +28,3 @@ parts:
     stage-packages:
       - libssl3t64
       - ca-certificates
-    override-build: |
-      # Only check that the code compiles; do not produce a binary.
-      cargo check --release
