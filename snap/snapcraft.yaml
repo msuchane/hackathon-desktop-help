@@ -1,5 +1,5 @@
 name: ubuntu-desktop-help
-base: core26
+base: core24
 version: '0.1.0'
 summary: AI-powered Ubuntu Desktop help CLI
 description: |
