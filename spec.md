@@ -129,7 +129,7 @@ The minimum viable product is a CLI. A stretch goal is an integration with GNOME
 | Markdown parsing | `pulldown-cmark` |
 | Text chunking | `text-splitter` + `tokenizers` |
 | Embeddings | `fastembed` |
-| Vector database | `lancedb` |
+| Vector search | brute-force cosine (in-memory, baked into binary) |
 | LLM (option A) | `llama-cpp-rs` |
 | LLM (option B) | Ollama HTTP API (`reqwest`) |
 | LLM (option C) | Canonical inference snap HTTP API |
@@ -193,7 +193,33 @@ The minimum viable product is a CLI. A stretch goal is an integration with GNOME
 
 ---
 
-## Stretch Goal: Memory-Mapped Vector Index
+## Stretch Goal: LanceDB Vector Database
+
+### Context
+
+The current implementation uses brute-force cosine similarity over a flat vector index baked into the binary at build time. This is exact, fast enough for the current corpus (~8k–25k vectors), and requires no external dependencies at runtime. However it has no filtering capability: every query scores every chunk regardless of which documentation set or Ubuntu version it came from.
+
+### Potential benefits
+
+- **Per-product filtering** — with multiple documentation sets indexed (Desktop, Server, Core, etc.), queries can be scoped to only the relevant product. For example, a question about snaps would query Core docs; a question about GNOME settings would query Desktop docs. This avoids irrelevant chunks polluting the context window.
+- **Per-version filtering** — chunks can be tagged with the Ubuntu version they describe (22.04, 24.04, 25.10…). At runtime the host version is read from `/etc/os-release` and queries are filtered to matching chunks, preventing outdated instructions from appearing in answers.
+- **Incremental re-indexing** — individual files can be added, updated, or removed without rebuilding the entire index. Useful if doc updates are pulled at runtime rather than at build time.
+- **ANN indexing** — LanceDB supports IVF and HNSW approximate nearest-neighbour indexes. Not beneficial at current scale, but becomes relevant above ~100k vectors.
+
+### Why it is not the current approach
+
+- **First-run indexing is unacceptable for this use case.** If the index lives in `~/.local/share/`, it must be built on the user's machine. At current corpus size this takes ~10 minutes and ~10 GB of RAM — a completely unacceptable first-run experience for a help tool.
+- **External storage.** The index would live outside the binary, requiring a declared data directory in the snap (`$SNAP_USER_DATA`) and making the snap no longer fully self-contained.
+- **Larger binary and longer builds.** LanceDB depends on Apache Arrow and DataFusion, adding ~20–40 MB to the binary and several minutes to cold compile times.
+- **No net gain at current scale.** Brute-force cosine over ~25k vectors takes microseconds; ANN indexes provide no perceptible speedup.
+
+### When it would become worthwhile
+
+If the indexing pipeline is ever moved to a **separate offline build step** (e.g. a CI job that publishes a pre-built `index.lance` as a snap asset or OCI layer), then the first-run cost is eliminated and the filtering benefits become available without user-visible impact. Until that infrastructure exists, the embedded binary index is strictly preferable.
+
+---
+
+
 
 ### Context
 
