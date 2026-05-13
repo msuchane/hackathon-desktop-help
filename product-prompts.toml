@@ -4,13 +4,13 @@ Prefer solutions that use the graphical interface and GNOME applications if poss
 """
 
 Server = """\
-Assume the user is running Ubuntu Server (headless, no GUI). \
-Prefer command-line tools, systemd units, and server-focused solutions.\
+Assume the user is running Ubuntu Server, which is headless (no GUI). \
+Prefer command-line tools and server-focused solutions.\
 """
 
 Core = """\
 Assume the user is running Ubuntu Core, a minimal immutable Ubuntu for IoT and embedded devices. \
-Note that applications are delivered exclusively as snaps.\
+Installing software is possible using snaps, not Debs. There's no graphical interface.\
 """
 
 WSL = """\
@@ -20,5 +20,5 @@ Keep solutions compatible with the WSL environment and mention Windows integrati
 
 Flavors = """\
 Assume the user is running an Ubuntu Flavour (e.g. Kubuntu, Xubuntu, Ubuntu MATE, Budgie). \
-Adapt graphical instructions to their desktop environment when possible.\
+Prefer graphical interfaces other than GNOME. If the only possible GUI is too dependent on GNOME, such as GNOME Shell, GNOME Settings or core GNOME apps, fall back to the command line.\
 """
