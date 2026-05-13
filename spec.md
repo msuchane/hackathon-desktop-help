@@ -29,9 +29,20 @@ The minimum viable product is a CLI. A stretch goal is an integration with GNOME
 - General web search or crawling beyond official Ubuntu docs
 - Fine-tuning or training models
 
+## Design Principle: Compile-Time Indexing
+
+Documentation must be cloned, chunked, embedded, and baked into the binary **at compile time** (`cargo build`), not when the user launches the app. This is a hard requirement, not a preference.
+
+The rationale:
+- Indexing the current corpus takes ~10 minutes and ~10 GB of RAM. Imposing this on users at first launch is unacceptable for a help tool.
+- A snap must be immediately usable after installation with no setup step.
+- The vector index is embedded directly into the binary via `include_bytes!`, making the app a fully self-contained executable with no external files or servers required at runtime.
+
+Any architectural change (e.g. switching vector backends, adding more documentation sets) must preserve this property. If a future approach cannot perform indexing at compile time, it must be clearly marked as a stretch goal with an explicit plan for how to avoid first-run cost (e.g. CI-published pre-built indexes shipped as snap assets).
+
 ---
 
-## Architecture
+
 
 ```
 ┌─────────────────────────────────────────────────────┐
@@ -73,18 +84,20 @@ The minimum viable product is a CLI. A stretch goal is an integration with GNOME
 
 ### 2. Indexer
 
-- Walks the local doc directory for `.md` files
-- Parses markdown with `pulldown-cmark`, strips markup, preserves structure
-- Chunks text using `text-splitter` with token-aware splitting
-- Embeds each chunk with `fastembed` (downloads small embedding model on first run)
-- Stores chunks + vectors + source file path + Ubuntu version tag in LanceDB
-- Re-indexes only changed files (content hash or git diff)
+- Runs at **compile time** (`cargo build`) via `build.rs` — never at application startup
+- Clones documentation repositories into `docs/` using `git clone --depth 1`
+- Walks `docs/` recursively for `.md` files; inlines MyST `{include}` snippets
+- Parses markdown with `pulldown-cmark`, strips markup to plain text
+- Chunks text using `text-splitter`
+- Embeds each chunk with `fastembed` (BGE-small-en-v1.5, 384 dimensions)
+- Converts file paths to published documentation URLs using each repo's `conf.py`
+- Writes a binary vector index to `$OUT_DIR/index.bin`, which is embedded into the binary via `include_bytes!`
 
 ### 3. Query Engine
 
-- Embeds the user's query with the same embedding model
-- Queries LanceDB for top-k semantically similar chunks, filtered by Ubuntu version
-- Returns chunks with their source file paths
+- Embeds the user's query with the same embedding model (fastembed, BGE-small-en-v1.5)
+- Performs brute-force cosine similarity search over the in-memory index (exact, microseconds at current scale)
+- Returns top-k chunks with their published documentation URLs
 
 ### 4. LLM Interface
 
