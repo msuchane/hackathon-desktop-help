@@ -186,6 +186,7 @@ fn on_send(
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .xalign(0.0)
         .halign(gtk::Align::Start)
+        .selectable(true)
         .build();
     wire_links(&reply_label);
     reply_label.add_css_class("assistant-bubble");
@@ -283,7 +284,7 @@ fn append_bubble(message_list: &Box, text: &str, is_user: bool) {
         .wrap_mode(gtk::pango::WrapMode::WordChar)
         .xalign(if is_user { 1.0 } else { 0.0 })
         .halign(if is_user { gtk::Align::End } else { gtk::Align::Start })
-        .selectable(is_user) // user bubbles are selectable; assistant bubbles use link activation
+        .selectable(true) // both bubble types are selectable for copy-paste
         .build();
 
     if is_user {
