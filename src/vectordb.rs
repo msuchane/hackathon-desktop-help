@@ -9,7 +9,7 @@ static INDEX_BYTES: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/index.bin"
 pub const TOP_K: usize = 8;
 // Cosine similarity multiplier applied to chunks from the selected product's docs.
 // Boosts on-topic results without completely excluding other sources.
-const PRODUCT_BOOST: f32 = 1.5;
+const PRODUCT_BOOST: f32 = 1.2;
 
 struct IndexEntry {
     source: String,
