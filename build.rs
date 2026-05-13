@@ -18,8 +18,8 @@ const EMBEDDING_DIM: usize = 384;
 // Each tuple is (clone URL, subdirectory name under docs/).
 const DOCS_REPOS: &[(&str, &str)] = &[
     ("https://github.com/ubuntu/ubuntu-desktop-documentation", "ubuntu-desktop-documentation"),
-    // ("https://github.com/canonical/ubuntu-server-documentation", "ubuntu-server-documentation"),
-    // ("https://github.com/canonical/ubuntu-core-docs", "ubuntu-core-docs"),
+    ("https://github.com/canonical/ubuntu-server-documentation", "ubuntu-server-documentation"),
+    ("https://github.com/canonical/ubuntu-core-docs", "ubuntu-core-docs"),
 ];
 
 fn main() -> anyhow::Result<()> {
