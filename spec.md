@@ -24,7 +24,7 @@ The minimum viable product is a CLI. A stretch goal is an integration with GNOME
 
 ### Out of scope
 
-- Cloud-based LLM backends (local-first; cloud as opt-in future extension)
+- Cloud-based LLM backends are supported as a user-selectable option alongside local models (see LLM Interface)
 - Support for non-Ubuntu/non-GNOME desktops
 - General web search or crawling beyond official Ubuntu docs
 - Fine-tuning or training models
@@ -102,11 +102,12 @@ Any architectural change (e.g. switching vector backends, adding more documentat
 ### 4. LLM Interface
 
 - Constructs a prompt: system message + retrieved chunks + user query
-- Sends request to local LLM via one of:
-  - **Option A**: `llama-cpp-rs` (self-contained, preferred for snap packaging)
-  - **Option B**: Ollama HTTP API (easier to develop against)
-  - **Option C**: Canonical inference snap HTTP API
-- Parses response into structured output: `{ answer, doc_links, clarifying_question? }`
+- The user selects their preferred backend via a CLI flag; local and cloud options are both first-class
+- Supported backends:
+  - **Local — Ollama** (`--model <name>`): connects to a locally running Ollama instance; default backend; no account or internet access required
+  - **Cloud — GitHub Copilot / GitHub Models** (`--copilot`): uses the GitHub Models API; requires a GitHub account with Copilot access; model is selected by GitHub
+  - **Cloud — OpenAI-compatible API** (future): any provider exposing an OpenAI-compatible `/v1/chat/completions` endpoint (OpenAI, Anthropic via proxy, Mistral, etc.) configurable via `--api-url` and `--api-key`
+- The RAG pipeline is identical regardless of backend — only the final LLM call differs
 
 ### 5. CLI Frontend
 
