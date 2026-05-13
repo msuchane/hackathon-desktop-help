@@ -9,10 +9,10 @@ pub fn run() -> Result<()> {
     app.connect_activate(build_ui);
     // Pass no CLI args to GTK — argument parsing is handled by clap before this point
     let status = app.run_with_args::<String>(&[]);
-    if status == 0 {
+    if status == 0.into() {
         Ok(())
     } else {
-        anyhow::bail!("GTK application exited with status {status}")
+        anyhow::bail!("GTK application exited with status {:?}", status)
     }
 }
 
