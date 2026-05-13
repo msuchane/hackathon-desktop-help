@@ -17,22 +17,30 @@ const EMBEDDING_DIM: usize = 384;
 
 #[derive(Deserialize)]
 struct DocsConfig {
-    repo: Vec<RepoEntry>,
+    repos: Vec<String>,
 }
 
-#[derive(Deserialize)]
-struct RepoEntry {
-    url: String,
-    name: String,
-}
-
-/// Load the list of documentation repositories from `docs.toml` at build time.
+/// Load the list of documentation repository URLs from `docs.toml` at build time.
+/// The clone directory name is inferred from the last segment of the URL.
 fn load_docs_config() -> anyhow::Result<Vec<(String, String)>> {
     let src = fs::read_to_string("docs.toml")
         .map_err(|e| anyhow::anyhow!("failed to read docs.toml: {e}"))?;
     let config: DocsConfig = toml::from_str(&src)
         .map_err(|e| anyhow::anyhow!("docs.toml is malformed: {e}"))?;
-    Ok(config.repo.into_iter().map(|r| (r.url, r.name)).collect())
+    config
+        .repos
+        .into_iter()
+        .map(|url| {
+            let name = url
+                .trim_end_matches('/')
+                .rsplit('/')
+                .next()
+                .filter(|s| !s.is_empty())
+                .ok_or_else(|| anyhow::anyhow!("cannot infer repo name from URL: {url}"))?
+                .to_string();
+            Ok((url, name))
+        })
+        .collect()
 }
 
 fn main() -> anyhow::Result<()> {
