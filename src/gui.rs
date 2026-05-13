@@ -1,15 +1,35 @@
+use std::sync::{Arc, Mutex};
+
+use adw::glib;
 use adw::prelude::*;
 use adw::{Application, ApplicationWindow, Clamp, HeaderBar, ToolbarView};
 use anyhow::Result;
 use gtk::{Box, Button, Entry, Label, Orientation, ScrolledWindow, Separator};
 
+use crate::llm::{LlmClient, Message};
 use crate::markdown;
+use crate::vectordb::{RagStore, TOP_K};
 
 const APP_ID: &str = "com.canonical.UbuntuDesktopHelp";
 
-pub fn run() -> Result<()> {
+pub fn run(
+    client: Arc<LlmClient>,
+    rag: Arc<Mutex<RagStore>>,
+    conversation: Arc<Mutex<Vec<Message>>>,
+    tokio_handle: tokio::runtime::Handle,
+) -> Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
-    app.connect_activate(build_ui);
+
+    app.connect_activate({
+        let (client, rag, conversation, tokio_handle) = (
+            client.clone(),
+            rag.clone(),
+            conversation.clone(),
+            tokio_handle.clone(),
+        );
+        move |app| build_ui(app, client.clone(), rag.clone(), conversation.clone(), tokio_handle.clone())
+    });
+
     // Pass no CLI args to GTK — argument parsing is handled by clap before this point
     let status = app.run_with_args::<String>(&[]);
     if status == 0.into() {
@@ -41,7 +61,13 @@ fn load_css() {
     );
 }
 
-fn build_ui(app: &Application) {
+fn build_ui(
+    app: &Application,
+    client: Arc<LlmClient>,
+    rag: Arc<Mutex<RagStore>>,
+    conversation: Arc<Mutex<Vec<Message>>>,
+    tokio_handle: tokio::runtime::Handle,
+) {
     load_css();
 
     let window = ApplicationWindow::builder()
@@ -113,46 +139,134 @@ fn build_ui(app: &Application) {
 
     // Connect send button
     {
-        let (message_list, input, scroll) =
-            (message_list.clone(), input.clone(), scroll.clone());
-        send_btn.connect_clicked(move |_| on_send(&input, &message_list, &scroll));
+        let (ml, sc, inp, btn, cl, ra, cv, th) = (
+            message_list.clone(), scroll.clone(), input.clone(), send_btn.clone(),
+            client.clone(), rag.clone(), conversation.clone(), tokio_handle.clone(),
+        );
+        send_btn.connect_clicked(move |_| on_send(&inp, &btn, &ml, &sc, &cl, &ra, &cv, &th));
     }
     // Connect Enter key in the input field
-    input.connect_activate(move |input| on_send(input, &message_list, &scroll));
+    input.connect_activate(move |inp| on_send(inp, &send_btn, &message_list, &scroll, &client, &rag, &conversation, &tokio_handle));
 
     window.present();
 }
 
-fn on_send(input: &Entry, message_list: &Box, scroll: &ScrolledWindow) {
+fn on_send(
+    input: &Entry,
+    send_btn: &Button,
+    message_list: &Box,
+    scroll: &ScrolledWindow,
+    client: &Arc<LlmClient>,
+    rag: &Arc<Mutex<RagStore>>,
+    conversation: &Arc<Mutex<Vec<Message>>>,
+    tokio_handle: &tokio::runtime::Handle,
+) {
     let text = input.text();
     if text.trim().is_empty() {
         return;
     }
     input.set_text("");
+    input.set_sensitive(false);
+    send_btn.set_sensitive(false);
 
+    // User bubble
     append_bubble(message_list, &text, true);
-    append_bubble(
-        message_list,
-        "Hello.\n\n\
-         ## This is a list\n\n\
-         - An item.\n\
-         - With some **Bold Text**.\n\n\
-         ## A numbered list\n\n\
-         - Here's an *italic phrase*.\n\
-         - Or even `code elements`.\n\n\
-         ## Code block\n\n\
-         Run a command:\n\n\
-         ```\n\
-         snap install me\n\n\
-         Installed.\n\
-         ```\n\n\
-         ## Lorem ipsum\n\n\
-         Lorem ipsum dolor sit amet, consectetur adipiscing elit, sed do eiusmod \
-         tempor incididunt ut labore et dolore magna aliqua. Ut enim ad minim veniam, \
-         quis nostrud exercitation ullamco laboris nisi ut aliquip ex ea commodo consequat.",
-        false,
-    );
+
+    // Empty assistant bubble; kept for incremental token updates
+    let reply_label = Label::builder()
+        .wrap(true)
+        .wrap_mode(gtk::pango::WrapMode::WordChar)
+        .xalign(0.0)
+        .halign(gtk::Align::Start)
+        .selectable(true)
+        .build();
+    reply_label.add_css_class("assistant-bubble");
+    message_list.append(&reply_label);
     scroll_to_bottom(scroll);
+
+    // Channel: None signals completion, Some(token) is a streamed token.
+    // async-channel works with both tokio (sender side) and glib (receiver side).
+    let (sender, receiver) = async_channel::bounded::<Option<String>>(64);
+
+    // Receive tokens on the GTK main thread via glib's async executor
+    {
+        let reply_label = reply_label.clone();
+        let input = input.clone();
+        let send_btn = send_btn.clone();
+        let scroll = scroll.clone();
+
+        glib::MainContext::default().spawn_local(async move {
+            let mut accumulated = String::new();
+            while let Ok(msg) = receiver.recv().await {
+                match msg {
+                    Some(token) => {
+                        accumulated.push_str(&token);
+                        reply_label.set_markup(&markdown::to_pango(&accumulated));
+                        scroll_to_bottom(&scroll);
+                    }
+                    None => {
+                        input.set_sensitive(true);
+                        send_btn.set_sensitive(true);
+                        input.grab_focus();
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    // Spawn the RAG search + LLM streaming on the tokio runtime
+    let (query, client, rag, conversation) = (
+        text.to_string(),
+        Arc::clone(client),
+        Arc::clone(rag),
+        Arc::clone(conversation),
+    );
+    tokio_handle.spawn(async move {
+        // RAG search is CPU-bound; block_in_place prevents starving other tokio tasks
+        let relevant = tokio::task::block_in_place(|| {
+            rag.lock().unwrap().search(&query, TOP_K).unwrap_or_default()
+        });
+
+        let user_content = if relevant.is_empty() {
+            query.clone()
+        } else {
+            let ctx = relevant
+                .iter()
+                .map(|(src, txt)| format!("[Source: {src}]\n{txt}"))
+                .collect::<Vec<_>>()
+                .join("\n\n");
+            format!("Context from documentation:\n{ctx}\n\nQuestion: {query}")
+        };
+
+        // Add user message and snapshot the full history for the LLM call
+        let messages = {
+            let mut conv = conversation.lock().unwrap();
+            conv.push(Message { role: "user".to_string(), content: user_content });
+            conv.clone()
+        };
+
+        let sender_tok = sender.clone();
+        let result = client
+            .chat_streaming(&messages, || {}, move |t| {
+                sender_tok.send_blocking(Some(t.to_string())).ok();
+            })
+            .await;
+
+        match result {
+            Ok(reply) => {
+                conversation.lock().unwrap().push(Message {
+                    role: "assistant".to_string(),
+                    content: reply,
+                });
+            }
+            Err(e) => {
+                sender.send_blocking(Some(format!("\n\n*Error: {e}*"))).ok();
+            }
+        }
+
+        sender.send_blocking(None).ok();
+    });
 }
 
 fn append_bubble(message_list: &Box, text: &str, is_user: bool) {
@@ -185,3 +299,4 @@ fn scroll_to_bottom(scroll: &ScrolledWindow) {
         }
     });
 }
+

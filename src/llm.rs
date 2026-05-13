@@ -90,41 +90,57 @@ impl OllamaClient {
         }
     }
 
-    // Streams the reply token-by-token via Ollama's NDJSON format.
+    async fn send_request(&self, messages: &[Message]) -> Result<reqwest::Response> {
+        let req = OllamaChatRequest { model: &self.model, messages, stream: true };
+        let endpoint = format!("{}/api/chat", self.url.trim_end_matches('/'));
+        Ok(self.client.post(&endpoint).json(&req).send().await?.error_for_status()?)
+    }
+
+    // Streams the reply token-by-token via Ollama's NDJSON format, printing to stdout.
     // `on_first_token` fires once just before the first character is printed.
     pub async fn chat<F: FnOnce()>(
         &self,
         messages: &[Message],
         on_first_token: F,
     ) -> Result<String> {
-        let req = OllamaChatRequest {
-            model: &self.model,
-            messages,
-            stream: true,
-        };
-
-        // Remove any trailing slash to avoid double-slash in the URL
-        let endpoint = format!("{}/api/chat", self.url.trim_end_matches('/'));
-        let response = self
-            .client
-            .post(&endpoint)
-            .json(&req)
-            .send()
-            .await?
-            // Converts HTTP 4xx/5xx responses into an Err instead of silently returning bad JSON
-            .error_for_status()?;
-
-        // Ollama streams newline-delimited JSON; each chunk is one line
-        stream_ndjson(response.bytes_stream(), on_first_token, |line| {
-            let chunk: OllamaStreamChunk =
-                serde_json::from_str(line).context("failed to parse Ollama stream chunk")?;
-            Ok(StreamToken {
-                content: chunk.message.content,
-                done: chunk.done,
-            })
-        })
-        .await
+        let response = self.send_request(messages).await?;
+        let result = stream_ndjson(
+            response.bytes_stream(),
+            on_first_token,
+            parse_ollama_chunk,
+            |t| {
+                print!("{t}");
+                io::stdout().flush().ok();
+            },
+        )
+        .await;
+        if result.is_ok() {
+            println!();
+        }
+        result
     }
+
+    // Like `chat` but calls `on_token` for each streaming token instead of printing to stdout.
+    // Intended for GUI use where tokens are routed to a widget rather than the terminal.
+    pub async fn chat_streaming<F, G>(
+        &self,
+        messages: &[Message],
+        on_first_token: F,
+        on_token: G,
+    ) -> Result<String>
+    where
+        F: FnOnce(),
+        G: Fn(&str),
+    {
+        let response = self.send_request(messages).await?;
+        stream_ndjson(response.bytes_stream(), on_first_token, parse_ollama_chunk, on_token).await
+    }
+}
+
+fn parse_ollama_chunk(line: &str) -> Result<StreamToken> {
+    let chunk: OllamaStreamChunk =
+        serde_json::from_str(line).context("failed to parse Ollama stream chunk")?;
+    Ok(StreamToken { content: chunk.message.content, done: chunk.done })
 }
 
 // ── Copilot client ─────────────────────────────────────────────────────────────
@@ -170,60 +186,75 @@ impl CopilotClient {
         Ok(Self { client: http, token })
     }
 
-    // Streams the reply token-by-token via the GitHub Models OpenAI-compatible SSE API.
-    // `on_first_token` fires once just before the first character is printed.
-    pub async fn chat<F: FnOnce()>(
-        &self,
-        messages: &[Message],
-        on_first_token: F,
-    ) -> Result<String> {
-        let req = OpenAiChatRequest {
-            model: COPILOT_MODEL,
-            messages,
-            stream: true,
-        };
-
+    async fn send_request(&self, messages: &[Message]) -> Result<reqwest::Response> {
+        let req = OpenAiChatRequest { model: COPILOT_MODEL, messages, stream: true };
         let response = self
             .client
             .post(COPILOT_API_URL)
-            // The GitHub Models API accepts a GitHub PAT directly as a Bearer token
             .header("Authorization", format!("Bearer {}", self.token))
             .json(&req)
             .send()
             .await?;
 
-        // On error, capture the response body to surface the API's own error message
         if !response.status().is_success() {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             anyhow::bail!("Copilot API error {status}: {body}");
         }
 
-        // Copilot streams Server-Sent Events; each line is "data: <json>" or "data: [DONE]"
-        stream_ndjson(response.bytes_stream(), on_first_token, |line| {
-            // Strip the SSE "data: " prefix
-            let json = line
-                .strip_prefix("data: ")
-                .context("unexpected SSE line format")?;
-
-            // The final SSE event is the sentinel value [DONE], not JSON
-            if json == "[DONE]" {
-                return Ok(StreamToken { content: String::new(), done: true });
-            }
-
-            let chunk: OpenAiChunk =
-                serde_json::from_str(json).context("failed to parse Copilot SSE chunk")?;
-            let content = chunk
-                .choices
-                .into_iter()
-                .next()
-                .map(|c| c.delta.content)
-                .unwrap_or_default();
-
-            Ok(StreamToken { content, done: false })
-        })
-        .await
+        Ok(response)
     }
+
+    // Streams the reply token-by-token via the GitHub Models OpenAI-compatible SSE API,
+    // printing to stdout. `on_first_token` fires once just before the first character is printed.
+    pub async fn chat<F: FnOnce()>(
+        &self,
+        messages: &[Message],
+        on_first_token: F,
+    ) -> Result<String> {
+        let response = self.send_request(messages).await?;
+        let result = stream_ndjson(
+            response.bytes_stream(),
+            on_first_token,
+            parse_copilot_chunk,
+            |t| {
+                print!("{t}");
+                io::stdout().flush().ok();
+            },
+        )
+        .await;
+        if result.is_ok() {
+            println!();
+        }
+        result
+    }
+
+    // Like `chat` but calls `on_token` for each streaming token instead of printing to stdout.
+    pub async fn chat_streaming<F, G>(
+        &self,
+        messages: &[Message],
+        on_first_token: F,
+        on_token: G,
+    ) -> Result<String>
+    where
+        F: FnOnce(),
+        G: Fn(&str),
+    {
+        let response = self.send_request(messages).await?;
+        stream_ndjson(response.bytes_stream(), on_first_token, parse_copilot_chunk, on_token).await
+    }
+}
+
+fn parse_copilot_chunk(line: &str) -> Result<StreamToken> {
+    let json = line.strip_prefix("data: ").context("unexpected SSE line format")?;
+    if json == "[DONE]" {
+        return Ok(StreamToken { content: String::new(), done: true });
+    }
+    let chunk: OpenAiChunk =
+        serde_json::from_str(json).context("failed to parse Copilot SSE chunk")?;
+    let content =
+        chunk.choices.into_iter().next().map(|c| c.delta.content).unwrap_or_default();
+    Ok(StreamToken { content, done: false })
 }
 
 // ── Unified client enum ───────────────────────────────────────────────────────
@@ -235,6 +266,7 @@ pub enum LlmClient {
 }
 
 impl LlmClient {
+    // For CLI: streams tokens to stdout.
     pub async fn chat<F: FnOnce()>(
         &self,
         messages: &[Message],
@@ -243,6 +275,23 @@ impl LlmClient {
         match self {
             LlmClient::Ollama(c) => c.chat(messages, on_first_token).await,
             LlmClient::Copilot(c) => c.chat(messages, on_first_token).await,
+        }
+    }
+
+    // For GUI: calls `on_token` for each token instead of writing to stdout.
+    pub async fn chat_streaming<F, G>(
+        &self,
+        messages: &[Message],
+        on_first_token: F,
+        on_token: G,
+    ) -> Result<String>
+    where
+        F: FnOnce(),
+        G: Fn(&str),
+    {
+        match self {
+            LlmClient::Ollama(c) => c.chat_streaming(messages, on_first_token, on_token).await,
+            LlmClient::Copilot(c) => c.chat_streaming(messages, on_first_token, on_token).await,
         }
     }
 }
@@ -257,24 +306,23 @@ struct StreamToken {
 }
 
 // Reads a byte stream line-by-line, calls `parse_line` on each non-empty line,
-// prints content tokens as they arrive, and returns the full assembled reply.
-// `on_first_token` is called once before the first non-empty token is printed.
-async fn stream_ndjson<S, E, F, P>(
+// calls `on_token` for each non-empty content token, and returns the full assembled reply.
+// `on_first_token` is called once before the first non-empty token.
+async fn stream_ndjson<S, E, F, P, G>(
     mut stream: S,
     on_first_token: F,
     parse_line: P,
+    on_token: G,
 ) -> Result<String>
 where
     S: futures_util::Stream<Item = Result<bytes::Bytes, E>> + Unpin,
     E: std::error::Error + Send + Sync + 'static,
     F: FnOnce(),
     P: Fn(&str) -> Result<StreamToken>,
+    G: Fn(&str),
 {
     let mut full_reply = String::new();
     let mut buf = Vec::new();
-    let stdout = io::stdout();
-    let mut out = stdout.lock();
-    // Wrap in Option so the callback fires exactly once
     let mut on_first_token = Some(on_first_token);
 
     while let Some(chunk) = stream.next().await {
@@ -296,20 +344,16 @@ where
                 if let Some(f) = on_first_token.take() {
                     f();
                 }
-                write!(out, "{}", token.content)?;
-                out.flush()?;
+                on_token(&token.content);
                 full_reply.push_str(&token.content);
             }
 
             if token.done {
-                // Move to a new line after the final token
-                writeln!(out)?;
                 return Ok(full_reply);
             }
         }
     }
 
-    writeln!(out)?;
     Ok(full_reply)
 }
 

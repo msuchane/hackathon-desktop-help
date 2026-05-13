@@ -1,4 +1,5 @@
 use std::io::{self, BufRead, Write};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use anyhow::Result;
@@ -49,7 +50,10 @@ enum Commands {
         ollama_url: String,
     },
     /// Launch the graphical user interface
-    Gui,
+    Gui {
+        #[arg(long, env = "OLLAMA_URL", default_value = DEFAULT_OLLAMA_URL)]
+        ollama_url: String,
+    },
 }
 
 // Entry point; #[tokio::main] sets up the async runtime so we can use .await
@@ -60,8 +64,8 @@ async fn main() -> Result<()> {
         Commands::Chat { ollama_url } => {
             run_chat(ollama_url, cli.model, cli.copilot).await
         }
-        Commands::Gui => {
-            run_gui()
+        Commands::Gui { ollama_url } => {
+            run_gui(ollama_url, cli.model, cli.copilot).await
         }
     }
 }
@@ -174,6 +178,30 @@ async fn run_chat(ollama_url: String, model: String, use_copilot: bool) -> Resul
     Ok(())
 }
 
-fn run_gui() -> Result<()> {
-    gui::run()
+async fn run_gui(ollama_url: String, model: String, use_copilot: bool) -> Result<()> {
+    let client = if use_copilot {
+        eprintln!("Authenticating with GitHub Copilot…");
+        LlmClient::Copilot(CopilotClient::create().await?)
+    } else {
+        LlmClient::Ollama(OllamaClient::new(ollama_url, model))
+    };
+
+    let spinner = ProgressBar::new_spinner();
+    spinner.set_style(
+        ProgressStyle::default_spinner()
+            .template("{spinner} Loading model…")
+            .unwrap(),
+    );
+    spinner.enable_steady_tick(Duration::from_millis(80));
+    let rag = tokio::task::block_in_place(RagStore::load)?;
+    spinner.finish_and_clear();
+
+    let conversation = Arc::new(Mutex::new(vec![Message {
+        role: "system".to_string(),
+        content: SYSTEM_PROMPT.to_string(),
+    }]));
+
+    let tokio_handle = tokio::runtime::Handle::current();
+
+    gui::run(Arc::new(client), Arc::new(Mutex::new(rag)), conversation, tokio_handle)
 }
