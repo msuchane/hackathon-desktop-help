@@ -39,12 +39,14 @@ struct Cli {
 // All available subcommands
 #[derive(Subcommand)]
 enum Commands {
-    /// Start an interactive chat session
+    /// Start an interactive chat session in the terminal
     Chat {
         // Ollama server URL; only used when --copilot is not set
         #[arg(long, env = "OLLAMA_URL", default_value = DEFAULT_OLLAMA_URL)]
         ollama_url: String,
     },
+    /// Launch the graphical user interface
+    Gui,
 }
 
 // Entry point; #[tokio::main] sets up the async runtime so we can use .await
@@ -54,6 +56,9 @@ async fn main() -> Result<()> {
     match cli.command {
         Commands::Chat { ollama_url } => {
             run_chat(ollama_url, cli.model, cli.copilot).await
+        }
+        Commands::Gui => {
+            run_gui()
         }
     }
 }
@@ -163,5 +168,10 @@ async fn run_chat(ollama_url: String, model: String, use_copilot: bool) -> Resul
         }
     }
 
+    Ok(())
+}
+
+fn run_gui() -> Result<()> {
+    println!("GUI not yet implemented.");
     Ok(())
 }
