@@ -111,7 +111,10 @@ fn load_chunks(dir: &str) -> Vec<Chunk> {
             Ok(c) => c,
             Err(_) => continue,
         };
-        let plain = markdown_to_plain_text(&raw);
+        // Inline any MyST {include} directives before parsing so that
+        // reused content is present in the plain-text output
+        let expanded = expand_includes(&raw, file_path);
+        let plain = markdown_to_plain_text(&expanded);
         let source = file_path.display().to_string();
         for chunk_text in splitter.chunks(&plain) {
             let text = chunk_text.trim().to_string();
@@ -124,20 +127,113 @@ fn load_chunks(dir: &str) -> Vec<Chunk> {
     chunks
 }
 
-// Recursively collects all .md file paths under `dir` into `out`.
+// Recursively collects .md files and .txt files that are inside a `reuse` directory.
 fn collect_md_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(iter) => iter,
         Err(_) => return,
     };
+    let in_reuse = dir.file_name().and_then(|n| n.to_str()) == Some("reuse");
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.is_dir() {
             collect_md_files(&path, out);
-        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            out.push(path);
+        } else {
+            match path.extension().and_then(|s| s.to_str()) {
+                Some("md") => out.push(path),
+                Some("txt") if in_reuse => out.push(path),
+                _ => {}
+            }
         }
     }
+}
+
+// Expands MyST `{include}` directives in `content` by inlining the referenced files.
+//
+// Supported fence styles:
+//   ```{include} path/to/file.txt
+//   ```
+//   ::::{include} path/to/file.txt
+//   ::::
+//
+// Paths may be relative to the current file or absolute within the repo
+// (starting with `/`, resolved from the nearest ancestor `docs/` directory).
+fn expand_includes(content: &str, file_path: &Path) -> String {
+    // Resolve the docs root as the first ancestor directory named "docs"
+    let docs_root: Option<std::path::PathBuf> = file_path
+        .ancestors()
+        .find(|a| a.file_name().and_then(|n| n.to_str()) == Some("docs"))
+        .map(|p| p.to_path_buf());
+
+    let file_dir = file_path.parent().unwrap_or(Path::new("."));
+
+    let mut output = String::with_capacity(content.len());
+    let mut lines = content.lines().peekable();
+
+    while let Some(line) = lines.next() {
+        // Match opening fences: backtick (3+) or colon (4+) followed by {include}
+        let trimmed = line.trim_start();
+        if let Some(include_path) = parse_include_directive(trimmed) {
+            // Consume lines up to and including the matching closing fence
+            let fence_char = trimmed.chars().next().unwrap_or('`');
+            let fence_len = trimmed.chars().take_while(|&c| c == fence_char).count();
+            let closing: String = std::iter::repeat(fence_char).take(fence_len).collect();
+            for next in lines.by_ref() {
+                if next.trim() == closing || next.trim().starts_with(&closing) {
+                    break;
+                }
+            }
+
+            // Resolve the included file path
+            let resolved = if include_path.starts_with('/') {
+                // Absolute path within the repo: resolve from docs root
+                docs_root
+                    .as_deref()
+                    .map(|r| r.join(include_path.trim_start_matches('/')))
+            } else {
+                Some(file_dir.join(&include_path))
+            };
+
+            if let Some(inc_path) = resolved {
+                match fs::read_to_string(&inc_path) {
+                    Ok(inc) => {
+                        output.push_str(&inc);
+                        if !inc.ends_with('\n') {
+                            output.push('\n');
+                        }
+                    }
+                    Err(_) => {
+                        // File not found — emit a note so the chunk at least mentions it
+                        output.push_str(&format!("[included file: {include_path}]\n"));
+                    }
+                }
+            }
+        } else {
+            output.push_str(line);
+            output.push('\n');
+        }
+    }
+
+    output
+}
+
+// Returns the include path if `line` is a MyST {include} directive opener, otherwise None.
+fn parse_include_directive(line: &str) -> Option<String> {
+    // Accept ``` or :::: fences of any length
+    let rest = if line.starts_with("```") {
+        line.trim_start_matches('`')
+    } else if line.starts_with("::::") || line.starts_with(":::") {
+        line.trim_start_matches(':')
+    } else {
+        return None;
+    };
+    // rest should now be `{include} path`
+    let rest = rest.trim();
+    let rest = rest.strip_prefix("{include}")?.trim();
+    if rest.is_empty() {
+        return None;
+    }
+    Some(rest.to_string())
 }
 
 // Strips markdown syntax to plain text using pulldown-cmark's event stream.
