@@ -137,28 +137,24 @@ fn load_chunks(dir: &str) -> Vec<Chunk> {
     chunks
 }
 
-// Recursively collects .md files and .txt files that are inside a `reuse` directory.
+// Recursively collects all .md file paths under `dir` into `out`.
 fn collect_md_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
     let entries = match fs::read_dir(dir) {
         Ok(iter) => iter,
         Err(_) => return,
     };
-    let in_reuse = dir.file_name().and_then(|n| n.to_str()) == Some("reuse");
     for entry in entries.filter_map(|e| e.ok()) {
         let path = entry.path();
         if path.is_dir() {
             collect_md_files(&path, out);
-        } else {
-            match path.extension().and_then(|s| s.to_str()) {
-                Some("md") => out.push(path),
-                Some("txt") if in_reuse => out.push(path),
-                _ => {}
-            }
+        } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
+            out.push(path);
         }
     }
 }
 
 // Expands MyST `{include}` directives in `content` by inlining the referenced files.
+// Recursively resolves nested includes (included files may themselves include others).
 //
 // Supported fence styles:
 //   ```{include} path/to/file.txt
@@ -175,13 +171,25 @@ fn expand_includes(content: &str, file_path: &Path) -> String {
         .find(|a| a.file_name().and_then(|n| n.to_str()) == Some("docs"))
         .map(|p| p.to_path_buf());
 
-    let file_dir = file_path.parent().unwrap_or(Path::new("."));
+    expand_includes_inner(content, file_path, &docs_root, 0)
+}
 
+// Inner recursive helper; `depth` guards against circular includes.
+fn expand_includes_inner(
+    content: &str,
+    file_path: &Path,
+    docs_root: &Option<std::path::PathBuf>,
+    depth: usize,
+) -> String {
+    if depth > 8 {
+        return content.to_string();
+    }
+
+    let file_dir = file_path.parent().unwrap_or(Path::new("."));
     let mut output = String::with_capacity(content.len());
     let mut lines = content.lines().peekable();
 
     while let Some(line) = lines.next() {
-        // Match opening fences: backtick (3+) or colon (4+) followed by {include}
         let trimmed = line.trim_start();
         if let Some(include_path) = parse_include_directive(trimmed) {
             // Consume lines up to and including the matching closing fence
@@ -207,8 +215,10 @@ fn expand_includes(content: &str, file_path: &Path) -> String {
             if let Some(inc_path) = resolved {
                 match fs::read_to_string(&inc_path) {
                     Ok(inc) => {
-                        output.push_str(&inc);
-                        if !inc.ends_with('\n') {
+                        // Recursively expand any includes inside the included file
+                        let expanded = expand_includes_inner(&inc, &inc_path, docs_root, depth + 1);
+                        output.push_str(&expanded);
+                        if !expanded.ends_with('\n') {
                             output.push('\n');
                         }
                     }
