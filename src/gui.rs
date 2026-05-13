@@ -24,5 +24,9 @@ fn build_ui(app: &Application) {
         .default_height(600)
         .build();
 
+    let toolbar_view = adw::ToolbarView::new();
+    toolbar_view.add_top_bar(&adw::HeaderBar::new());
+    window.set_content(Some(&toolbar_view));
+
     window.present();
 }
