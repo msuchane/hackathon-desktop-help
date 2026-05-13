@@ -6,8 +6,8 @@ use futures_util::StreamExt;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 
-// Model used when --model copilot is selected; gpt-4o-mini is fast and available on all plans
-const COPILOT_MODEL: &str = "gpt-4o-mini";
+// Model used when --copilot is selected; claude-haiku-4-5 is fast and available on all Copilot plans
+const COPILOT_MODEL: &str = "claude-haiku-4-5";
 // GitHub Models API endpoint — the supported public API for accessing GitHub-hosted models
 const COPILOT_API_URL: &str = "https://models.inference.ai.azure.com/chat/completions";
 
