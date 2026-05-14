@@ -8,9 +8,10 @@ description: |
   using local documentation and a large language model. Supports both
   a local Ollama backend and the GitHub Copilot / GitHub Models API.
 
-  A pre-built documentation index (index.lance) must be provided at runtime.
-  Set UBUNTU_HELP_INDEX_PATH to its location, or place it at
-  $SNAP_USER_DATA/index.lance. Generate it with the ubuntu-docs-indexer tool.
+  A pre-built documentation index (index.lance) is downloaded from the latest
+  GitHub release during snap build and baked into the snap. To use a custom
+  index at runtime, set UBUNTU_HELP_INDEX_PATH or place it at
+  $SNAP_USER_DATA/index.lance.
 
 grade: devel
 confinement: strict
@@ -48,3 +49,16 @@ parts:
       - libcairo2
       - libpango-1.0-0
       - libgdk-pixbuf-2.0-0
+
+  rag-index:
+    # Downloads the pre-built documentation index from the latest GitHub release
+    # and stages it at $SNAP/index.lance for runtime use.
+    plugin: nil
+    build-packages:
+      - curl
+    override-build: |
+      curl -fsSL \
+        "https://github.com/msuchane/hackathon-desktop-help/releases/latest/download/index.lance.tar.gz" \
+        -o index.lance.tar.gz
+      tar -xzf index.lance.tar.gz
+      cp -r index.lance "$CRAFT_PART_INSTALL/index.lance"
