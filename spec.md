@@ -496,13 +496,25 @@ After Option A proves insufficient in practice — i.e. when users report that m
 
 Generating the RAG index (`index.lance`) is the most expensive part of the snap build: it clones multiple documentation repositories, chunks and embeds every document using a neural embedding model (~130 MB of weights downloaded from HuggingFace), and writes a LanceDB database. This makes snap builds slow and means every clean build environment must repeat the work.
 
+Observed resource requirements on a developer machine: **≥10 GB RAM** during embedding. This is a hard constraint for CI runner selection.
+
 ### Proposed solution
 
 Move index generation out of `build.rs` into a dedicated GitHub Actions workflow. The workflow publishes the resulting index as a downloadable artifact (e.g. a GitHub Release asset or Actions artifact). The snap build then downloads the pre-built index instead of regenerating it.
 
+### Runner requirements
+
+Standard GitHub Actions runners (`ubuntu-latest`) provide only **7 GB RAM**, which is insufficient. The indexing job requires a runner with at least 10 GB RAM. Options:
+
+- **GitHub larger runners** — 4-core/16 GB runners, available on Team/Enterprise plans or as pay-per-use on public repos
+- **Self-hosted runners** — on developer or Canonical-owned hardware with sufficient memory
+- **Canonical internal CI** — if this becomes an official Canonical project
+
+This is a blocking constraint: the CI approach is only viable if an adequately resourced runner is available.
+
 ### Workflow outline
 
-1. **Index generation job** — triggered on changes to `docs.toml`, `build.rs`, or on a weekly schedule:
+1. **Index generation job** — triggered on changes to `docs.toml`, `build.rs`, or on a weekly schedule; requires a ≥16 GB RAM runner:
    - Install build dependencies (`protobuf-compiler`, `libprotobuf-dev`)
    - Cache HuggingFace model weights (`~/.cache/huggingface`) between runs
    - `cargo build --release` (which runs `build.rs` and produces `index.lance`)
@@ -516,10 +528,11 @@ Move index generation out of `build.rs` into a dedicated GitHub Actions workflow
 |---|---|---|
 | Snap build time | Slow (full embed on every build) | Fast (download only) |
 | Index freshness | Always up-to-date with source | Depends on trigger schedule |
-| Complexity | Low | Moderate (two-job pipeline) |
+| Complexity | Low | Moderate (two-job pipeline + runner provisioning) |
 | Offline snap builds | Works | Requires artifact download |
 | Clean environment cost | High (re-embeds every time) | Low |
+| Runner requirements | Any machine with ≥10 GB RAM | CI runner with ≥10 GB RAM (non-standard) |
 
 ### When to implement
 
-When snap build times become a bottleneck, or when the documentation corpus grows large enough that embedding on every build is impractical.
+When snap build times become a bottleneck and a suitably resourced CI runner is available.
