@@ -487,3 +487,39 @@ The rewritten query replaces the original for RAG embedding and BM25 search only
 ### When to implement
 
 After Option A proves insufficient in practice — i.e. when users report that multi-turn follow-ups still retrieve wrong documentation despite the previous-reply prefix.
+
+---
+
+## Stretch Goal: CI-Generated Documentation Index
+
+### Problem
+
+Generating the RAG index (`index.lance`) is the most expensive part of the snap build: it clones multiple documentation repositories, chunks and embeds every document using a neural embedding model (~130 MB of weights downloaded from HuggingFace), and writes a LanceDB database. This makes snap builds slow and means every clean build environment must repeat the work.
+
+### Proposed solution
+
+Move index generation out of `build.rs` into a dedicated GitHub Actions workflow. The workflow publishes the resulting index as a downloadable artifact (e.g. a GitHub Release asset or Actions artifact). The snap build then downloads the pre-built index instead of regenerating it.
+
+### Workflow outline
+
+1. **Index generation job** — triggered on changes to `docs.toml`, `build.rs`, or on a weekly schedule:
+   - Install build dependencies (`protobuf-compiler`, `libprotobuf-dev`)
+   - Cache HuggingFace model weights (`~/.cache/huggingface`) between runs
+   - `cargo build --release` (which runs `build.rs` and produces `index.lance`)
+   - Upload `index.lance` as a release asset or Actions artifact
+
+2. **Snap build job** — downloads the pre-built index artifact, sets `UBUNTU_HELP_INDEX_PATH`, then runs `snapcraft`
+
+### Trade-offs
+
+| | Current (build.rs) | CI-generated index |
+|---|---|---|
+| Snap build time | Slow (full embed on every build) | Fast (download only) |
+| Index freshness | Always up-to-date with source | Depends on trigger schedule |
+| Complexity | Low | Moderate (two-job pipeline) |
+| Offline snap builds | Works | Requires artifact download |
+| Clean environment cost | High (re-embeds every time) | Low |
+
+### When to implement
+
+When snap build times become a bottleneck, or when the documentation corpus grows large enough that embedding on every build is impractical.
