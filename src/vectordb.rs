@@ -9,9 +9,27 @@ use lancedb::query::{ExecutableQuery, QueryBase, Select};
 pub const TOP_K: usize = 12;
 
 fn index_path() -> std::path::PathBuf {
+    // 1. Explicit override — dev, testing, or CI
     if let Ok(p) = std::env::var("UBUNTU_HELP_INDEX_PATH") {
         return std::path::PathBuf::from(p);
     }
+    // 2. Updated index written here by a content snap mount or a runtime download
+    let user_index = std::path::PathBuf::from(
+        std::env::var("SNAP_USER_DATA").unwrap_or_default(),
+    )
+    .join("index.lance");
+    if user_index.exists() {
+        return user_index;
+    }
+    // 3. Index baked into the snap at build time (read-only fallback)
+    let snap_index = std::path::PathBuf::from(
+        std::env::var("SNAP").unwrap_or_default(),
+    )
+    .join("index.lance");
+    if snap_index.exists() {
+        return snap_index;
+    }
+    // 4. Dev build: index lives in Cargo's OUT_DIR
     std::path::PathBuf::from(concat!(env!("OUT_DIR"), "/index.lance"))
 }
 

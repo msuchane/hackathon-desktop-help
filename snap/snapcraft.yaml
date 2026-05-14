@@ -32,6 +32,7 @@ parts:
       - libssl-dev
       - libgtk-4-dev
       - libadwaita-1-dev
+      - protobuf-compiler  # required by lance-encoding (transitive LanceDB dep)
     stage-packages:
       - libssl3t64
       - ca-certificates
@@ -41,3 +42,20 @@ parts:
       - libcairo2
       - libpango-1.0-0
       - libgdk-pixbuf-2.0-0
+
+  rag-index:
+    # Separate part so index packaging can later be replaced (e.g. by a content
+    # snap or a runtime download) without touching the Rust build part.
+    # The index itself is built by build.rs during the ubuntu-desktop-help part;
+    # this part just locates it and stages it at the well-known runtime path
+    # ($SNAP/index.lance) that index_path() falls back to when no updated index
+    # is present in $SNAP_USER_DATA.
+    plugin: nil
+    after: [ubuntu-desktop-help]
+    override-build: |
+      INDEX=$(find "$CRAFT_STAGE" -name "index.lance" -type d | head -1)
+      if [ -z "$INDEX" ]; then
+        echo "ERROR: index.lance not found in stage directory" >&2
+        exit 1
+      fi
+      cp -r "$INDEX" "$CRAFT_PART_INSTALL/index.lance"
