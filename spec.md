@@ -282,6 +282,64 @@ When the corpus grows beyond ~5 repositories (index > ~150 MB), making the embed
 
 ---
 
+## Stretch Goal: Index as a Content Snap
+
+### Context
+
+Ubuntu documentation updates frequently — new releases, backports, and policy changes land on a rolling basis. With the current model the index is baked into the snap at build time, so users only get updated documentation when the entire snap is rebuilt and refreshed. For a frequently-changing corpus this is an unacceptably long feedback loop.
+
+### Proposed approach
+
+Publish the LanceDB index as a **separate content snap** (`ubuntu-help-index`). The main snap connects to it via the `content` interface:
+
+```yaml
+# Main snap (ubuntu-desktop-help)
+plugs:
+  help-index:
+    interface: content
+    content: rag-index
+    target: $SNAP/index
+
+apps:
+  ubuntu-desktop-help:
+    environment:
+      UBUNTU_HELP_INDEX_PATH: $SNAP/index/index.lance
+    plugs: [help-index]
+```
+
+```yaml
+# Index snap (ubuntu-help-index)
+slots:
+  help-index:
+    interface: content
+    content: rag-index
+    read:
+      - $SNAP/index.lance
+
+parts:
+  index:
+    plugin: nil
+    override-build: |
+      # Clone docs, embed, create LanceDB index
+      ...
+      cp -r index.lance $CRAFT_PART_INSTALL/index.lance
+```
+
+The index snap is rebuilt and published by a CI job that runs whenever any upstream documentation repository receives a commit. Users get fresh documentation within hours of it being published, without waiting for a binary snap release.
+
+### Key properties
+
+- **Decoupled release cadence** — docs update independently of the app binary; CI for each docs repo triggers an index snap rebuild
+- **Smaller main snap** — the `index.lance/` directory (currently tens of MB, growing with corpus) moves entirely out of the main snap
+- **No user-side indexing** — the content snap is pre-built; users just install it, same guarantee as today
+- **Graceful degradation** — if the index snap is not connected, the app falls back to an empty index and answers questions without RAG context, rather than failing
+
+### When to implement
+
+When documentation update latency becomes a user-visible problem, or when the index directory grows large enough to make main snap refresh times unacceptable (roughly above 100 MB, which corresponds to ~5–6 repositories of current size).
+
+---
+
 ## Stretch Goal: External Index File (mmap)
 
 As more documentation sources are added, binary size and build-time RAM grow linearly: roughly 15 MB of index and 10 GB of peak build RAM per repository of similar size. Beyond ~5 repositories the embedded approach becomes impractical.
