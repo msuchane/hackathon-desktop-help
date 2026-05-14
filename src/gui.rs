@@ -6,7 +6,8 @@ use adw::{Application, ApplicationWindow, Clamp, HeaderBar, ToolbarView};
 use anyhow::Result;
 use gtk::{Box, Button, Entry, Label, Orientation, ScrolledWindow, Separator};
 
-use crate::llm::{LlmClient, Message};
+use crate::conversation::Conversation;
+use crate::llm::LlmClient;
 use crate::markdown;
 use crate::prompts;
 use crate::vectordb::{RagStore, TOP_K};
@@ -17,7 +18,7 @@ const PRODUCTS: &[&str] = &["Desktop", "Server", "Core", "WSL", "Flavors"];
 pub fn run(
     client: Arc<LlmClient>,
     rag: Arc<Mutex<RagStore>>,
-    conversation: Arc<Mutex<Vec<Message>>>,
+    conversation: Arc<Mutex<Conversation>>,
     tokio_handle: tokio::runtime::Handle,
 ) -> Result<()> {
     let app = Application::builder().application_id(APP_ID).build();
@@ -67,7 +68,7 @@ fn build_ui(
     app: &Application,
     client: Arc<LlmClient>,
     rag: Arc<Mutex<RagStore>>,
-    conversation: Arc<Mutex<Vec<Message>>>,
+    conversation: Arc<Mutex<Conversation>>,
     tokio_handle: tokio::runtime::Handle,
 ) {
     load_css();
@@ -147,17 +148,29 @@ fn build_ui(
     toolbar_view.set_content(Some(&main_box));
     window.set_content(Some(&toolbar_view));
 
-    // Connect send button
+    // Connect send button — clone all shared handles for the closure
     {
-        let (ml, sc, inp, btn, cl, ra, cv, th, sd) = (
+        let (message_list, scroll, input, send_btn, client, rag, conversation, tokio_handle, system_dropdown) = (
             message_list.clone(), scroll.clone(), input.clone(), send_btn.clone(),
             client.clone(), rag.clone(), conversation.clone(), tokio_handle.clone(),
             system_dropdown.clone(),
         );
-        send_btn.connect_clicked(move |_| on_send(&inp, &btn, &ml, &sc, &cl, &ra, &cv, &th, &sd));
+        let send_btn_ref = send_btn.clone();
+        send_btn.connect_clicked(move |_| {
+            on_send(&input, &send_btn_ref, &message_list, &scroll, &client, &rag, &conversation, &tokio_handle, &system_dropdown);
+        });
     }
-    // Connect Enter key in the input field
-    input.connect_activate(move |inp| on_send(inp, &send_btn, &message_list, &scroll, &client, &rag, &conversation, &tokio_handle, &system_dropdown));
+    // Connect Enter key in the input field — needs its own set of clones
+    {
+        let (message_list, scroll, send_btn, client, rag, conversation, tokio_handle, system_dropdown) = (
+            message_list.clone(), scroll.clone(), send_btn.clone(),
+            client.clone(), rag.clone(), conversation.clone(), tokio_handle.clone(),
+            system_dropdown.clone(),
+        );
+        input.connect_activate(move |input| {
+            on_send(input, &send_btn, &message_list, &scroll, &client, &rag, &conversation, &tokio_handle, &system_dropdown);
+        });
+    }
 
     window.present();
 }
@@ -169,7 +182,7 @@ fn on_send(
     scroll: &ScrolledWindow,
     client: &Arc<LlmClient>,
     rag: &Arc<Mutex<RagStore>>,
-    conversation: &Arc<Mutex<Vec<Message>>>,
+    conversation: &Arc<Mutex<Conversation>>,
     tokio_handle: &tokio::runtime::Handle,
     system_dropdown: &gtk::DropDown,
 ) {
@@ -179,11 +192,12 @@ fn on_send(
     }
 
     // Read the selected product and its system prompt on the GTK thread before spawning.
+    // The product prompt overrides the conversation's system prompt for this turn.
     let product = PRODUCTS
         .get(system_dropdown.selected() as usize)
         .copied()
         .unwrap_or("Desktop");
-    let system_prompt = prompts::get_prompt(product).to_string();
+    let product_prompt = prompts::get_prompt(product).to_string();
     input.set_text("");
     input.set_sensitive(false);
     send_btn.set_sensitive(false);
@@ -191,7 +205,7 @@ fn on_send(
     // User bubble
     append_bubble(message_list, &text, true);
 
-    // Empty assistant bubble; kept for incremental token updates
+    // Empty assistant bubble; filled in incrementally as tokens arrive
     let reply_label = Label::builder()
         .wrap(true)
         .wrap_mode(gtk::pango::WrapMode::WordChar)
@@ -243,19 +257,8 @@ fn on_send(
         Arc::clone(conversation),
     );
     tokio_handle.spawn(async move {
-        // Build the RAG search query: prepend the last assistant reply (if any) so that
-        // follow-up questions like "how do I install it?" resolve to the right topic.
-        // Only the previous assistant turn is used — enough context without growing unboundedly.
-        // The bare user query is still what gets stored in history.
-        let rag_query = {
-            let conv = conversation.lock().unwrap();
-            match conv.last() {
-                Some(last) if last.role == "assistant" => {
-                    format!("{}\n\n{query}", last.content)
-                }
-                _ => query.clone(),
-            }
-        };
+        // Build the RAG search query using the Conversation helper (prepends last reply for context)
+        let rag_query = conversation.lock().unwrap().build_rag_query(&query);
 
         // CPU-bound: embed query synchronously, then clone the table handle for the async search.
         let (query_vec, table) = tokio::task::block_in_place(|| {
@@ -266,37 +269,20 @@ fn on_send(
         });
 
         // Async: LanceDB hybrid (vector + BM25) search
-        let relevant = RagStore::search_with_vec(&table, &rag_query, query_vec, TOP_K)
+        let chunks = RagStore::search_with_vec(&table, &rag_query, query_vec, TOP_K)
             .await
             .unwrap_or_default();
 
-        // RAG context is injected into the LLM call for this turn only.
-        // The bare query (without doc chunks) is what gets stored in history,
-        // so doc chunks don't accumulate and re-inflate the prompt on every turn.
-        let llm_user_content = if relevant.is_empty() {
-            query.clone()
-        } else {
-            let ctx = relevant
-                .iter()
-                .map(|(src, txt)| format!("[Source: {src}]\n{txt}"))
-                .collect::<Vec<_>>()
-                .join("\n\n");
-            format!("Context from documentation:\n{ctx}\n\nQuestion: {query}")
-        };
-
-        // Build message list: optional system prompt prepended, then conversation history,
-        // then the current turn's augmented user message.
-        // The system message is NOT stored in `conversation` to avoid it repeating each turn.
-        let messages = {
-            let conv = conversation.lock().unwrap();
-            let mut msgs = Vec::with_capacity(conv.len() + 2);
-            if !system_prompt.is_empty() {
-                msgs.push(Message { role: "system".to_string(), content: system_prompt });
+        // Build the augmented user message and the full LLM message list.
+        // The product prompt overrides the conversation's system prompt for this turn.
+        let llm_user_content = Conversation::build_augmented_content(&query, &chunks);
+        let mut messages = conversation.lock().unwrap().build_llm_messages(llm_user_content);
+        // Replace system message content with product-specific prompt if non-empty
+        if !product_prompt.is_empty() {
+            if let Some(sys) = messages.first_mut() {
+                sys.content = product_prompt;
             }
-            msgs.extend_from_slice(&conv);
-            msgs.push(Message { role: "user".to_string(), content: llm_user_content });
-            msgs
-        };
+        }
 
         let sender_tok = sender.clone();
         let result = client
@@ -307,9 +293,7 @@ fn on_send(
 
         match result {
             Ok(reply) => {
-                let mut conv = conversation.lock().unwrap();
-                conv.push(Message { role: "user".to_string(), content: query });
-                conv.push(Message { role: "assistant".to_string(), content: reply });
+                conversation.lock().unwrap().add_turn(query, reply);
             }
             Err(e) => {
                 sender.send_blocking(Some(format!("\n\n*Error: {e}*"))).ok();
