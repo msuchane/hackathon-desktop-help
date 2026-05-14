@@ -56,9 +56,11 @@ parts:
     plugin: nil
     after: [ubuntu-desktop-help]
     override-build: |
-      INDEX=$(find "$CRAFT_STAGE" -name "index.lance" -type d | head -1)
+      # OUT_DIR is inside the Rust build tree, not the stage directory.
+      # $CRAFT_PARTS_DIR points to the parts/ directory containing all parts.
+      INDEX=$(find "$CRAFT_PARTS_DIR/ubuntu-desktop-help/build" -name "index.lance" -type d | head -1)
       if [ -z "$INDEX" ]; then
-        echo "ERROR: index.lance not found in stage directory" >&2
+        echo "ERROR: index.lance not found in build directory" >&2
         exit 1
       fi
       cp -r "$INDEX" "$CRAFT_PART_INSTALL/index.lance"
