@@ -49,7 +49,9 @@ pub fn to_pango(markdown: &str) -> String {
             }
             Event::End(TagEnd::CodeBlock) => {
                 in_code -= 1;
-                out.push_str("</tt>\n\n");
+                // The code block text already ends with \n; only one more is needed
+                // for the blank-line separator before the next block.
+                out.push_str("</tt>\n");
             }
 
             Event::Start(Tag::List(start)) => {
