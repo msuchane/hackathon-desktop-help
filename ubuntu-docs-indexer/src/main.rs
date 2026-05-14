@@ -1,3 +1,5 @@
+use flate2::write::GzEncoder;
+use flate2::Compression;
 use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -91,6 +93,14 @@ async fn main() -> anyhow::Result<()> {
         cli.output.display(),
         chunks.len()
     );
+
+    let tarball_path = {
+        let mut p = cli.output.clone();
+        p.set_extension("lance.tar.gz");
+        p
+    };
+    compress_index(&cli.output, &tarball_path)?;
+    eprintln!("Compressed index written to {}.", tarball_path.display());
 
     Ok(())
 }
@@ -408,6 +418,22 @@ fn markdown_to_plain_text(markdown: &str) -> String {
         }
     }
     text
+}
+
+/// Compresses `index_dir` into a `.tar.gz` archive at `dest`.
+fn compress_index(index_dir: &Path, dest: &Path) -> anyhow::Result<()> {
+    let file = fs::File::create(dest)
+        .map_err(|e| anyhow::anyhow!("failed to create {}: {e}", dest.display()))?;
+    let gz = GzEncoder::new(file, Compression::best());
+    let mut tar = tar::Builder::new(gz);
+    // Archive the directory under its own name (e.g. "index.lance/...")
+    let dir_name = index_dir
+        .file_name()
+        .ok_or_else(|| anyhow::anyhow!("index path has no file name"))?;
+    tar.append_dir_all(dir_name, index_dir)
+        .map_err(|e| anyhow::anyhow!("failed to archive {}: {e}", index_dir.display()))?;
+    tar.finish()?;
+    Ok(())
 }
 
 /// Creates a LanceDB table at `path` with schema {source, text, vector}.
