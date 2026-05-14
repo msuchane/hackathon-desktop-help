@@ -95,9 +95,41 @@ Any architectural change (e.g. switching vector backends, adding more documentat
 
 ### 3. Query Engine
 
-- Embeds the user's query with the same embedding model (fastembed, BGE-small-en-v1.5)
-- Performs brute-force cosine similarity search over the in-memory index (exact, microseconds at current scale)
-- Returns top-k chunks with their published documentation URLs
+The query engine is the bridge between the user's question and the documentation. **The LLM never receives the full documentation set** — only a small, pre-selected subset of relevant passages is included in each prompt. This is fundamental to how the system works and why it can operate within a normal LLM context window.
+
+#### How retrieval works
+
+1. **Embed the query.** The user's question is converted to a 384-dimension vector using the same BGE-small-en-v1.5 model used at index time.
+
+2. **Score every chunk.** Cosine similarity is computed between the query vector and every chunk vector in the in-memory index (~10,000 comparisons; takes microseconds).
+
+3. **Apply product boost.** If the user has selected a product (e.g. Desktop), chunks whose source URL contains that product's documentation prefix have their score multiplied by a small factor (currently 1.1×). This nudges on-topic results forward without hard-filtering out other sources.
+
+4. **Take the top-K.** The highest-scoring 8 chunks are selected. These are the only documentation passages that will be sent to the LLM.
+
+5. **Construct the prompt.** The 8 chunks (each labelled with its source URL) are prepended to the user's question as context. The LLM is asked to answer based on that context.
+
+#### What the LLM receives per turn
+
+```
+[system message — product-specific instructions, ~100 tokens]
+[previous turns — bare user questions + assistant answers only]
+[user message]:
+  Context from documentation:
+    [Source: https://documentation.ubuntu.com/...]\n<chunk text>
+    ...  (×8 chunks, each up to 512 characters)
+  Question: <user's query>
+```
+
+Total RAG context per turn: approximately **1,200 tokens** (8 chunks × ~150 tokens each). This is under 1% of the context windows of Claude Haiku (200k) or GPT-4o mini (128k).
+
+The doc chunks are **not stored in conversation history** — they are injected fresh for each turn using the current query. This keeps the conversation history lean regardless of how many turns have elapsed.
+
+#### Limitations of vector-only retrieval
+
+Cosine similarity measures *semantic* closeness in embedding space. It works well for conceptual queries ("how do I install packages on Core?") but poorly for **exact terms** such as version numbers ("26.04") or release codenames ("Resolute Raccoon"), because those tokens are rare in the embedding model's training data and their vector placement is largely arbitrary. A chunk that literally says "Ubuntu 26.04 release notes" may score lower against "what's new in 26.04?" than a generic upgrade guide that is semantically about "what's new in Ubuntu".
+
+A planned improvement is **hybrid search**: combining vector (semantic) ranking with keyword (exact token overlap) ranking using Reciprocal Rank Fusion (RRF), so that queries containing specific version strings reliably surface the matching chunks.
 
 ### 4. LLM Interface
 
