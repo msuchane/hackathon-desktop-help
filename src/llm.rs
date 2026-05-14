@@ -13,8 +13,13 @@ use serde::{Deserialize, Serialize};
 // non-streaming works, streaming does not. claude-sonnet-4.5 supports
 // streaming. gpt-4o-mini is the safest default across all plan tiers.
 pub const DEFAULT_COPILOT_MODEL: &str = "gpt-4o-mini";
-// GitHub Copilot API endpoint — supports the full range of Copilot-licensed models including Claude
-const COPILOT_API_URL: &str = "https://api.githubcopilot.com/chat/completions";
+// GitHub Models API endpoint — the publicly documented inference API for individual
+// developers. Consistently accepts the raw GitHub OAuth token (from `gh auth token`).
+// NOTE: api.githubcopilot.com/chat/completions is the internal Copilot extension API
+// and requires a short-lived Copilot session token on some backend servers; using the
+// raw OAuth token produces intermittent HTTP 403 responses (alternating 200/403 on
+// successive identical requests due to load balancing across server configurations).
+const COPILOT_API_URL: &str = "https://models.github.ai/inference/chat/completions";
 
 // A single message in a conversation, following the OpenAI/Ollama chat format
 #[derive(Clone, Serialize, Deserialize, Debug)]
