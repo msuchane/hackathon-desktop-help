@@ -8,6 +8,10 @@ description: |
   using local documentation and a large language model. Supports both
   a local Ollama backend and the GitHub Copilot / GitHub Models API.
 
+  A pre-built documentation index (index.lance) must be provided at runtime.
+  Set UBUNTU_HELP_INDEX_PATH to its location, or place it at
+  $SNAP_USER_DATA/index.lance. Generate it with the ubuntu-docs-indexer tool.
+
 grade: devel
 confinement: strict
 
@@ -29,7 +33,6 @@ parts:
     plugin: rust
     source: .
     build-packages:
-      - git              # required by build.rs to clone documentation repos
       - pkg-config
       - libssl-dev
       - libgtk-4-dev
@@ -45,22 +48,3 @@ parts:
       - libcairo2
       - libpango-1.0-0
       - libgdk-pixbuf-2.0-0
-
-  rag-index:
-    # Separate part so index packaging can later be replaced (e.g. by a content
-    # snap or a runtime download) without touching the Rust build part.
-    # The index itself is built by build.rs during the ubuntu-desktop-help part;
-    # this part just locates it and stages it at the well-known runtime path
-    # ($SNAP/index.lance) that index_path() falls back to when no updated index
-    # is present in $SNAP_USER_DATA.
-    plugin: nil
-    after: [ubuntu-desktop-help]
-    override-build: |
-      # OUT_DIR is inside the Rust build tree, not the stage directory.
-      # $CRAFT_PARTS_DIR points to the parts/ directory containing all parts.
-      INDEX=$(find "$CRAFT_PARTS_DIR/ubuntu-desktop-help/build" -name "index.lance" -type d | head -1)
-      if [ -z "$INDEX" ]; then
-        echo "ERROR: index.lance not found in build directory" >&2
-        exit 1
-      fi
-      cp -r "$INDEX" "$CRAFT_PART_INSTALL/index.lance"

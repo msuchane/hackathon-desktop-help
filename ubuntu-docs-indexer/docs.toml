@@ -1,6 +1,6 @@
-# Documentation repositories cloned into docs/ at build time.
+# Documentation repositories indexed by ubuntu-docs-indexer.
 # The directory name under docs/ is inferred from the last URL path segment.
-# Re-run `cargo build --release` after editing this file to rebuild the RAG index.
+# Run `ubuntu-docs-indexer` (or `cargo run -p ubuntu-docs-indexer`) to rebuild the RAG index.
 
 repos = [
     "https://github.com/ubuntu/ubuntu-desktop-documentation",
