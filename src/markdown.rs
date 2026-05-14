@@ -40,6 +40,11 @@ pub fn to_pango(markdown: &str) -> String {
 
             Event::Start(Tag::CodeBlock(_)) => {
                 in_code += 1;
+                // Guarantee a line break before the block in case the preceding
+                // paragraph or list item didn't already end with one.
+                if !out.is_empty() && !out.ends_with('\n') {
+                    out.push('\n');
+                }
                 out.push_str("<tt>");
             }
             Event::End(TagEnd::CodeBlock) => {
