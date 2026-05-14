@@ -285,7 +285,12 @@ fn collect_md_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
         if path.is_dir() {
             collect_md_files(&path, out);
         } else if path.extension().and_then(|s| s.to_str()) == Some("md") {
-            out.push(path);
+            // Skip repo meta-files — they're not user-facing documentation
+            let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            let skip = matches!(name, "README.md" | "CONTRIBUTING.md");
+            if !skip {
+                out.push(path);
+            }
         }
     }
 }
