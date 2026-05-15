@@ -1,6 +1,0 @@
-[workspace]
-members = [
-    "ubuntu-desktop-help",
-    "ubuntu-docs-indexer",
-]
-resolver = "2"
