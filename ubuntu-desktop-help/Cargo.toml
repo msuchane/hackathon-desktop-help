@@ -14,7 +14,6 @@ gtk = { package = "gtk4", version = "0.9", features = ["v4_18"] }
 adw = { package = "libadwaita", version = "0.7", features = ["v1_6"] }
 async-channel = "2"
 indicatif = "0.17"
-lance-index = "0.29"
 lancedb = "0.29"
 pulldown-cmark = "0.11"
 reqwest = { version = "0.12", features = ["json", "stream"] }
