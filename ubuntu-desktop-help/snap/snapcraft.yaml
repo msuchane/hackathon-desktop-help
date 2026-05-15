@@ -18,7 +18,7 @@ confinement: strict
 
 apps:
   ubuntu-desktop-help:
-    command: bin/ubuntu-desktop-help
+    command: usr/bin/ubuntu-desktop-help
     plugs:
       - network          # Ollama / Copilot API calls
       - home             # reading config/token files under $HOME
