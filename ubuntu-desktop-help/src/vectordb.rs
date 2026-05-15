@@ -49,6 +49,8 @@ impl RagStore {
         eprintln!("[RAG] loading index from: {path_str}");
         let db = lancedb::connect(path_str).execute().await?;
         let table = db.open_table("docs").execute().await?;
+        let row_count = table.count_rows(None).await.unwrap_or(0);
+        eprintln!("[RAG] index loaded: {row_count} rows");
         let embedder = tokio::task::spawn_blocking(|| {
             TextEmbedding::try_new(InitOptions::new(EmbeddingModel::BGESmallENV15))
                 .context("failed to initialise embedding model")
@@ -75,13 +77,6 @@ impl RagStore {
         query_vec: Vec<f32>,
         top_k: usize,
     ) -> Result<Vec<(String, String)>> {
-        // Empty table means a debug build with no indexed docs — return nothing gracefully.
-        let row_count = table.count_rows(None).await.unwrap_or(0);
-        if row_count == 0 {
-            eprintln!("[RAG] WARNING: index table is empty (0 rows); no documentation will be used");
-            return Ok(vec![]);
-        }
-
         let mut stream = table
             .query()
             .nearest_to(query_vec.as_slice())?

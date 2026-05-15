@@ -272,9 +272,13 @@ fn on_send(
         });
 
         // Async: LanceDB hybrid (vector + BM25) search
-        let chunks = RagStore::search_with_vec(&table, &rag_query, query_vec, TOP_K)
-            .await
-            .unwrap_or_default();
+        let chunks = match RagStore::search_with_vec(&table, &rag_query, query_vec, TOP_K).await {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[RAG] search error: {e:#}");
+                vec![]
+            }
+        };
 
         // Build the augmented user message and the full LLM message list.
         // The product prompt is appended to the base system prompt for this turn.
