@@ -46,6 +46,7 @@ impl RagStore {
         let path_str = path
             .to_str()
             .context("LanceDB index path is not valid UTF-8")?;
+        eprintln!("[RAG] loading index from: {path_str}");
         let db = lancedb::connect(path_str).execute().await?;
         let table = db.open_table("docs").execute().await?;
         let embedder = tokio::task::spawn_blocking(|| {
@@ -75,7 +76,9 @@ impl RagStore {
         top_k: usize,
     ) -> Result<Vec<(String, String)>> {
         // Empty table means a debug build with no indexed docs — return nothing gracefully.
-        if table.count_rows(None).await.unwrap_or(0) == 0 {
+        let row_count = table.count_rows(None).await.unwrap_or(0);
+        if row_count == 0 {
+            eprintln!("[RAG] WARNING: index table is empty (0 rows); no documentation will be used");
             return Ok(vec![]);
         }
 
