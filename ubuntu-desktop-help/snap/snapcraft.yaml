@@ -18,7 +18,7 @@ confinement: strict
 
 apps:
   ubuntu-desktop-help:
-    command: snap/bin/launcher.sh
+    command: local/bin/launcher.sh
     plugs:
       - network          # Ollama / Copilot API calls
       - home             # reading config/token files under $HOME
@@ -55,9 +55,9 @@ parts:
     plugin: dump
     source: snap/local
     organize:
-      launcher.sh: snap/bin/launcher.sh
+      launcher.sh: local/bin/launcher.sh
     stage:
-      - snap/bin/launcher.sh
+      - local/bin/launcher.sh
 
   rag-index:
     # Downloads the pre-built documentation index from the latest GitHub release
