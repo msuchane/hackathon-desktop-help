@@ -34,6 +34,7 @@ parts:
     plugin: rust
     source: .
     build-packages:
+      - g++               # provides libstdc++ required by LanceDB/ORT native deps
       - pkg-config
       - libssl-dev
       - libgtk-4-dev
