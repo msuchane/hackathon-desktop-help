@@ -22,7 +22,7 @@ apps:
     plugs:
       - network          # Ollama / Copilot API calls
       - home             # reading config/token files under $HOME
-      - secret-service   # GNOME Keyring / KWallet for gh:github.com token
+      - password-manager-service  # GNOME Keyring / KWallet for gh:github.com token
       - desktop          # GTK4 display access
       - desktop-legacy
       - wayland
