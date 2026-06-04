@@ -18,7 +18,6 @@ confinement: strict
 apps:
   ubuntu-desktop-help:
     command: usr/bin/ubuntu-desktop-help
-    desktop: snap/gui/ubuntu-desktop-help.desktop
     environment:
       UBUNTU_HELP_INDEX_PATH: $SNAP_COMMON/index.lance
     plugs:
