@@ -1,7 +1,7 @@
 name: ubuntu-desktop-help
 base: core26
 build-base: devel
-version: '0.7.1'
+version: '0.7.2'
 summary: AI-powered Ubuntu Desktop help app
 description: |
   An interactive CLI tool that answers questions about Ubuntu
@@ -51,6 +51,7 @@ parts:
       - libcairo2
       - libpango-1.0-0
       - libgdk-pixbuf-2.0-0
+      - fonts-ubuntu           # provides Ubuntu Sans and Ubuntu Mono for Pango font aliases
 
   rag-index:
     # Downloads the pre-built documentation index from the latest GitHub release
