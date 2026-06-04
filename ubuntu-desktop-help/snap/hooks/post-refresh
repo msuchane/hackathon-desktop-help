@@ -2,6 +2,10 @@
 # Refreshes the writable RAG index copy in $SNAP_COMMON from the updated
 # snap image. Runs automatically after every snap refresh so the index
 # stays in sync with the installed snap revision.
+#
+# LanceDB creates index files with mode 0600. Using --no-preserve=mode ensures
+# all copied files get world-readable permissions (0644/0755 via umask),
+# so the app can read them when running as a non-root user.
 set -e
 rm -rf "$SNAP_COMMON/index.lance"
-cp -r "$SNAP/index.lance" "$SNAP_COMMON/index.lance"
+cp -r --no-preserve=mode "$SNAP/index.lance" "$SNAP_COMMON/index.lance"
