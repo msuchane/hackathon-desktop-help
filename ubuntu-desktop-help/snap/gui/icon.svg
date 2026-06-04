@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 256 256" xmlns="http://www.w3.org/2000/svg" width="256" height="256" role="img">
+  <title>Ubuntu Desktop Help</title>
+  <desc>App icon for a native Ubuntu documentation chatbot: a bold orange question mark inside a white speech bubble on an Ubuntu orange background.</desc>
+
+  <rect x="0" y="0" width="256" height="256" rx="46" fill="#E95420"/>
+
+  <rect x="28" y="28" width="200" height="160" rx="22" fill="#FFFFFF"/>
+  <polygon points="52,188 38,222 86,188" fill="#FFFFFF"/>
+
+  <text x="128" y="158"
+    font-family="Ubuntu, DejaVu Sans, Helvetica, sans-serif"
+    font-size="148"
+    font-weight="700"
+    fill="#E95420"
+    text-anchor="middle">?</text>
+</svg>
