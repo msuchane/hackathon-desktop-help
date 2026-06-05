@@ -26,7 +26,7 @@ cargo clippy --all-targets --all-features -- -D warnings
 ## Repository Layout
 
 ```
-desktop-help/
+ask-ubuntu-docs/
 ├── spec.md               # What the app is (keep in context)
 ├── agent.md              # This file
 ├── Cargo.toml            # Workspace root
@@ -112,12 +112,12 @@ cargo run -p cli -- update
 
 ## Environment & Config
 
-The app reads config from `~/.config/desktop-help/config.toml` (created with defaults on first run).
+The app reads config from `~/.config/ask-ubuntu-docs/config.toml` (created with defaults on first run).
 
 ```toml
 [docs]
 repo_url = "https://github.com/canonical/ubuntu-desktop-documentation"
-local_path = "~/.local/share/desktop-help/docs"
+local_path = "~/.local/share/ask-ubuntu-docs/docs"
 
 [embedding]
 model = "BAAI/bge-small-en-v1.5"   # downloaded by fastembed on first run
