@@ -1,8 +1,9 @@
-name: ubuntu-desktop-help
+name: ask-ubuntu-docs
 base: core26
 build-base: devel
-version: '0.7.2'
-summary: AI-powered Ubuntu Desktop help app
+version: '0.8.0'
+summary:  An LLM-based help app that uses the official Ubuntu documentation.
+
 description: |
   An interactive CLI tool that answers questions about Ubuntu
   using local documentation and a large language model. Supports both
@@ -16,8 +17,8 @@ grade: devel
 confinement: strict
 
 apps:
-  ubuntu-desktop-help:
-    command: usr/bin/ubuntu-desktop-help
+  ask-ubuntu-docs:
+    command: usr/bin/ask-ubuntu-docs
     environment:
       UBUNTU_HELP_INDEX_PATH: $SNAP_COMMON/index.lance
     plugs:
@@ -31,7 +32,7 @@ apps:
       - opengl
 
 parts:
-  ubuntu-desktop-help:
+  ask-ubuntu-docs:
     plugin: rust
     source: .
     build-packages:

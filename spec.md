@@ -145,10 +145,10 @@ A planned improvement is **hybrid search**: combining vector (semantic) ranking 
 
 - Built with `clap`
 - Commands:
-  - `desktop-help ask "<question>"` — single-shot query
-  - `desktop-help chat` — interactive session
-  - `desktop-help index` — manually trigger re-indexing
-  - `desktop-help update` — pull latest docs
+  - `ask-ubuntu-docs ask "<question>"` — single-shot query
+  - `ask-ubuntu-docs chat` — interactive session
+  - `ask-ubuntu-docs index` — manually trigger re-indexing
+  - `ask-ubuntu-docs update` — pull latest docs
 - Renders answer in terminal, prints doc links as clickable file:// URIs
 
 ### 6. GNOME Shell Search Provider (stretch)
@@ -293,7 +293,7 @@ Ubuntu documentation updates frequently — new releases, backports, and policy 
 Publish the LanceDB index as a **separate content snap** (`ubuntu-help-index`). The main snap connects to it via the `content` interface:
 
 ```yaml
-# Main snap (ubuntu-desktop-help)
+# Main snap (ask-ubuntu-docs)
 plugs:
   help-index:
     interface: content
@@ -301,7 +301,7 @@ plugs:
     target: $SNAP/index
 
 apps:
-  ubuntu-desktop-help:
+  ask-ubuntu-docs:
     environment:
       UBUNTU_HELP_INDEX_PATH: $SNAP/index/index.lance
     plugs: [help-index]
@@ -383,7 +383,7 @@ As more documentation sources are added, binary size and build-time RAM grow lin
 
 ### Proposed approach
 
-Move the vector index out of the binary and into a separate `index.bin` file shipped alongside it (e.g. at `/snap/ubuntu-desktop-help/current/share/index.bin`). At runtime, map the file into the process address space using `memmap2` instead of loading it into heap-allocated RAM.
+Move the vector index out of the binary and into a separate `index.bin` file shipped alongside it (e.g. at `/snap/ask-ubuntu-docs/current/share/index.bin`). At runtime, map the file into the process address space using `memmap2` instead of loading it into heap-allocated RAM.
 
 **Key properties of the mmap approach:**
 

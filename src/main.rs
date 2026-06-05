@@ -18,7 +18,7 @@ const SYSTEM_PROMPT: &str = include_str!("../cli-system-prompt.md");
 
 // Top-level CLI struct; clap uses the fields and attributes to build argument parsing
 #[derive(Parser)]
-#[command(name = "ubuntu-desktop-help", about = "Ubuntu Desktop Help CLI")]
+#[command(name = "ask-ubuntu-docs", about = "An LLM-based help app that uses the official Ubuntu documentation")]
 struct Cli {
     // Model name to use. For Ollama (default backend): e.g. "tinyllama", "phi3:mini".
     // For --copilot: any model available on your plan, e.g. "gpt-4o-mini",
@@ -70,4 +70,3 @@ async fn main() -> Result<()> {
         }
     }
 }
-

@@ -367,6 +367,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "ask-ubuntu-docs"
+version = "0.8.0"
+dependencies = [
+ "anyhow",
+ "arrow-array",
+ "async-channel",
+ "bytes",
+ "clap",
+ "fastembed",
+ "futures-util",
+ "gtk4",
+ "indicatif 0.17.11",
+ "lancedb",
+ "libadwaita",
+ "pulldown-cmark",
+ "reqwest",
+ "secret-service",
+ "serde",
+ "serde_json",
+ "tokio",
+ "toml 0.8.23",
+]
+
+[[package]]
 name = "async-broadcast"
 version = "0.7.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6518,30 +6542,6 @@ name = "typenum"
 version = "1.20.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40ce102ab67701b8526c123c1bab5cbe42d7040ccfd0f64af1a385808d2f43de"
-
-[[package]]
-name = "ubuntu-desktop-help"
-version = "0.7.2"
-dependencies = [
- "anyhow",
- "arrow-array",
- "async-channel",
- "bytes",
- "clap",
- "fastembed",
- "futures-util",
- "gtk4",
- "indicatif 0.17.11",
- "lancedb",
- "libadwaita",
- "pulldown-cmark",
- "reqwest",
- "secret-service",
- "serde",
- "serde_json",
- "tokio",
- "toml 0.8.23",
-]
 
 [[package]]
 name = "uds_windows"

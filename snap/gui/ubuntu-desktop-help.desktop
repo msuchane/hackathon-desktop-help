@@ -1,8 +1,8 @@
 [Desktop Entry]
 Type=Application
-Name=Ubuntu Desktop Help
-Comment=AI-powered help for Ubuntu Desktop
-Exec=ubuntu-desktop-help gui --copilot
+Name=Ask the docs
+Comment=An LLM-based help app that uses the official Ubuntu documentation.
+Exec=ask-ubuntu-docs gui --copilot
 Icon=${SNAP}/meta/gui/icon.svg
 Categories=GNOME;GTK;Utility;
 StartupNotify=true

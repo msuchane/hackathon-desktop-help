@@ -1,6 +1,6 @@
 [package]
-name = "ubuntu-desktop-help"
-version = "0.7.2"
+name = "ask-ubuntu-docs"
+version = "0.8.0"
 edition = "2024"
 
 [dependencies]

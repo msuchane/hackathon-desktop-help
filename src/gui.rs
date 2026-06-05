@@ -75,7 +75,7 @@ fn build_ui(
 
     let window = ApplicationWindow::builder()
         .application(app)
-        .title("Ubuntu Desktop Help")
+        .title("Ask the Docs")
         .default_width(800)
         .default_height(600)
         .build();
@@ -357,4 +357,3 @@ fn scroll_to_bottom(scroll: &ScrolledWindow) {
         }
     });
 }
-
