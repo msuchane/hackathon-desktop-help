@@ -1,73 +1,33 @@
-# spec.md — AI-Based Desktop Help
+# spec.md — Ask the Docs
 
 ## Purpose
 
-Create an AI-powered assistant that answers questions about using Ubuntu. The user asks a natural-language question; the app retrieves relevant chunks from the local markdown-based Ubuntu documentation, feeds them to an LLM, and returns an answer plus links to relevant doc pages.
+An AI-powered assistant that answers questions about Ubuntu. The user asks a natural-language question; the app retrieves relevant chunks from the official Ubuntu documentation using hybrid search, feeds them to an LLM, and returns a streamed answer.
 
-This is a local-first, context-based, offline tool. It uses official Ubuntu docs as its knowledge base and integrates optionally into GNOME Shell's overview search.
-
-The minimum viable product is a CLI. A stretch goal is an integration with GNOME shell overview search.
+The app ships as a snap. It has a GTK4 graphical interface and an interactive terminal chat mode. It supports a local Ollama backend and the GitHub Models API (via GitHub Copilot).
 
 ---
 
-## Scope
-
-### In scope
-
-- Cloning and keeping Ubuntu docs up-to-date locally
-- Chunking and embedding markdown documentation files into a local vector database
-- Answering user questions via a CLI interface
-- Returning a generated answer, a link to the relevant local doc page, and optionally a clarifying question
-- Ubuntu version awareness (e.g. a user on 22.04 gets answers from 22.04 docs)
-- GNOME Shell search provider integration (stretch goal)
-- Agentic actions offering to perform the described task on the user's behalf (stretch goal)
-
-### Out of scope
-
-- Cloud-based LLM backends are supported as a user-selectable option alongside local models (see LLM Interface)
-- Support for non-Ubuntu/non-GNOME desktops
-- General web search or crawling beyond official Ubuntu docs
-- Fine-tuning or training models
-
-## Design Principle: Compile-Time Indexing
-
-Documentation must be cloned, chunked, embedded, and baked into the binary **at compile time** (`cargo build`), not when the user launches the app. This is a hard requirement, not a preference.
-
-The rationale:
-- Indexing the current corpus takes ~10 minutes and ~10 GB of RAM. Imposing this on users at first launch is unacceptable for a help tool.
-- A snap must be immediately usable after installation with no setup step.
-- The vector index is embedded directly into the binary via `include_bytes!`, making the app a fully self-contained executable with no external files or servers required at runtime.
-
-Any architectural change (e.g. switching vector backends, adding more documentation sets) must preserve this property. If a future approach cannot perform indexing at compile time, it must be clearly marked as a stretch goal with an explicit plan for how to avoid first-run cost (e.g. CI-published pre-built indexes shipped as snap assets).
-
----
-
-
+## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
 │                   User Interface                    │
-│         CLI (clap)  /  GNOME Shell Search           │
+│         GTK4 GUI (gui.rs)  /  Terminal (cli.rs)     │
 └───────────────────┬─────────────────────────────────┘
                     │ query
 ┌───────────────────▼─────────────────────────────────┐
-│                  Query Pipeline                     │
-│  1. Embed query (fastembed)                         │
-│  2. Search vector DB (LanceDB)                      │
-│  3. Retrieve top-k chunks + source paths            │
+│                  RAG Pipeline                       │
+│  1. Embed query (fastembed, BGE-small-en-v1.5)      │
+│  2. Hybrid search: BM25 + vector (LanceDB)          │
+│  3. Retrieve top-12 chunks + source URLs            │
 └───────────────────┬─────────────────────────────────┘
                     │ chunks + metadata
 ┌───────────────────▼─────────────────────────────────┐
 │                  LLM Layer                          │
-│  Prompt = system instructions + chunks + query      │
-│  LLM generates: answer + clarifying question        │
-│  Returns: answer, doc links, optional question      │
-└───────────────────┬─────────────────────────────────┘
-                    │ structured response
-┌───────────────────▼─────────────────────────────────┐
-│               Agentic Layer (stretch)               │
-│  Parses intent → proposes action → awaits consent   │
-│  Executes via D-Bus / gsettings / shell             │
+│  Prompt = system message + history + chunks + query │
+│  Backend A: Ollama (local, NDJSON streaming)        │
+│  Backend B: GitHub Models API (SSE streaming)       │
 └─────────────────────────────────────────────────────┘
 ```
 
@@ -75,464 +35,162 @@ Any architectural change (e.g. switching vector backends, adding more documentat
 
 ## Components
 
-### 1. Doc Syncer
+### 1. Graphical Interface (`src/gui.rs`)
 
-- Clones several Ubuntu documentation Git repositories locally
-- Detects Ubuntu version on the host machine
-- On startup (or on demand), pulls latest changes
-- Stores docs under a local path using environment variables.
+- Built with GTK4 and libadwaita
+- Product selector dropdown: Desktop, Server, Core, WSL, Flavors — each injects a product-specific system prompt addition
+- Chat view with user and assistant message bubbles
+- Streams LLM tokens into the view as they arrive via an async channel
+- Markdown responses rendered as Pango markup (`src/markdown.rs`)
 
-### 2. Indexer
+### 2. Terminal Interface (`src/cli.rs`)
 
-- Runs at **compile time** (`cargo build`) via `build.rs` — never at application startup
-- Clones documentation repositories into `docs/` using `git clone --depth 1`
-- Walks `docs/` recursively for `.md` files; inlines MyST `{include}` snippets
-- Parses markdown with `pulldown-cmark`, strips markup to plain text
-- Chunks text using `text-splitter`
-- Embeds each chunk with `fastembed` (BGE-small-en-v1.5, 384 dimensions)
-- Converts file paths to published documentation URLs using each repo's `conf.py`
-- Writes a binary vector index to `$OUT_DIR/index.bin`, which is embedded into the binary via `include_bytes!`
+- Interactive line-by-line chat loop reading from stdin
+- Shows a spinner until the first token arrives, then streams tokens to stdout
+- Exit on EOF (Ctrl-D) or by typing `exit`
 
-### 3. Query Engine
+### 3. RAG Pipeline (`src/vectordb.rs`)
 
-The query engine is the bridge between the user's question and the documentation. **The LLM never receives the full documentation set** — only a small, pre-selected subset of relevant passages is included in each prompt. This is fundamental to how the system works and why it can operate within a normal LLM context window.
+- **Index**: LanceDB table (`docs`) with `source` (URL string) and `text` (chunk string) columns, plus a vector column for BGE-small-en-v1.5 embeddings
+- **Retrieval**: hybrid search combining vector similarity and BM25 full-text search via LanceDB's `full_text_search()` + `nearest_to()` API; returns top 12 chunks
+- **Embedding model**: `fastembed` with `BGESmallENV15` (384 dimensions); initialised at startup
+- **Index path**: resolved at runtime — see index path resolution below
 
-#### How retrieval works
+#### Index path resolution
 
-1. **Embed the query.** The user's question is converted to a 384-dimension vector using the same BGE-small-en-v1.5 model used at index time.
+The app resolves the LanceDB index in this order:
 
-2. **Score every chunk.** Cosine similarity is computed between the query vector and every chunk vector in the in-memory index (~10,000 comparisons; takes microseconds).
+1. `UBUNTU_HELP_INDEX_PATH` env var — explicit override
+2. `$SNAP_USER_DATA/index.lance` — written by the snap install/post-refresh hook
+3. `$SNAP/index.lance` — read-only asset baked into the snap at build time
+4. `target/index.lance` — dev build fallback
 
-3. **Apply product boost.** If the user has selected a product (e.g. Desktop), chunks whose source URL contains that product's documentation prefix have their score multiplied by a small factor (currently 1.1×). This nudges on-topic results forward without hard-filtering out other sources.
+#### Follow-up question handling
 
-4. **Take the top-K.** The highest-scoring 8 chunks are selected. These are the only documentation passages that will be sent to the LLM.
+When the user asks a follow-up question, the previous assistant reply is prepended to the RAG search query before embedding. This ensures that an ambiguous query like "how do I install it?" retrieves the right documentation topic.
 
-5. **Construct the prompt.** The 8 chunks (each labelled with its source URL) are prepended to the user's question as context. The LLM is asked to answer based on that context.
+### 4. LLM Interface (`src/llm.rs`)
 
-#### What the LLM receives per turn
+The user selects a backend via CLI flag:
+
+- **`--copilot`** (default off): uses the GitHub Models API (`https://models.github.ai/inference/chat/completions`) with SSE streaming. Default model: `gpt-4o-mini`. Override with `--model`.
+  - **Note:** `claude-haiku-4.5` appears as enabled in the models list but returns HTTP 403 for streaming on individual Copilot plans. Use `claude-sonnet-4.5` or a GPT model if Claude streaming is needed.
+- **Ollama** (default when `--copilot` is not set): connects to a local Ollama server via NDJSON streaming. Default model: `deepseek-r1:1.5b`. Default URL: `http://localhost:11434`. Override with `--model` and `--ollama-url`.
+
+Both backends implement `chat()` (streams to stdout) and `chat_streaming()` (calls a token callback), dispatched through the `LlmClient` enum.
+
+#### GitHub token resolution (Copilot mode)
+
+The app resolves the GitHub OAuth token in this order:
+
+1. `COPILOT_TOKEN` env var — use directly
+2. GNOME Keyring / KWallet via Secret Service (`service=gh:github.com`) — works inside snaps with the `password-manager-service` plug
+3. `gh auth token` CLI — last resort
+
+### 5. Conversation History (`src/conversation.rs`)
+
+- Stores bare user queries and assistant replies only — no RAG chunks, no system message
+- Assembles the full message list for each LLM call: `[system, ...history, augmented_user_message]`
+- The augmented user message includes the retrieved doc chunks prepended as context; it is never stored in history, so history stays lean regardless of conversation length
+
+### 6. Product Prompts (`src/prompts.rs`, `product-prompts.toml`)
+
+`product-prompts.toml` maps product names (Desktop, Server, Core, WSL, Flavors) to a system-prompt addition and a documentation URL prefix. The file is embedded at compile time via `include_str!`. The GUI injects the selected product's prompt addition into the system message for each LLM call.
+
+---
+
+## CLI
 
 ```
-[system message — product-specific instructions, ~100 tokens]
-[previous turns — bare user questions + assistant answers only]
-[user message]:
-  Context from documentation:
-    [Source: https://documentation.ubuntu.com/...]\n<chunk text>
-    ...  (×8 chunks, each up to 512 characters)
-  Question: <user's query>
+ask-ubuntu-docs [--model <name>] [--copilot] <subcommand>
+
+Subcommands:
+  chat   Interactive terminal chat session
+  gui    Launch the GTK4 graphical interface
+
+Global flags:
+  --model <name>     Model name (env: MODEL)
+  --copilot          Use GitHub Models API instead of Ollama
+
+Subcommand flags (chat and gui):
+  --ollama-url <url> Ollama server URL (env: OLLAMA_URL, default: http://localhost:11434)
 ```
-
-Total RAG context per turn: approximately **1,800 tokens** (12 chunks × ~150 tokens each). This is under 1% of the context windows of Claude Haiku (200k) or GPT-4o mini (128k).
-
-The doc chunks are **not stored in conversation history** — they are injected fresh for each turn using the current query. This keeps the conversation history lean regardless of how many turns have elapsed.
-
-#### Limitations of vector-only retrieval
-
-Cosine similarity measures *semantic* closeness in embedding space. It works well for conceptual queries ("how do I install packages on Core?") but poorly for **exact terms** such as version numbers ("26.04") or release codenames ("Resolute Raccoon"), because those tokens are rare in the embedding model's training data and their vector placement is largely arbitrary. A chunk that literally says "Ubuntu 26.04 release notes" may score lower against "what's new in 26.04?" than a generic upgrade guide that is semantically about "what's new in Ubuntu".
-
-A planned improvement is **hybrid search**: combining vector (semantic) ranking with keyword (exact token overlap) ranking using Reciprocal Rank Fusion (RRF), so that queries containing specific version strings reliably surface the matching chunks.
-
-### 4. LLM Interface
-
-- Constructs a prompt: system message + retrieved chunks + user query
-- The user selects their preferred backend via a CLI flag; local and cloud options are both first-class
-- Supported backends:
-  - **Local — Ollama** (`--model <name>`): connects to a locally running Ollama instance; default backend; no account or internet access required
-  - **Cloud — GitHub Copilot / GitHub Models** (`--copilot`): uses the `api.githubcopilot.com` chat completions endpoint; requires a GitHub account with Copilot access; defaults to `gpt-4o-mini` which supports streaming on all individual Copilot plans. **Note:** `claude-haiku-4.5` appears as `enabled` in the `/models` list but returns HTTP 403 for streaming requests on individual plans — use `claude-sonnet-4.5` or a GPT model if Claude streaming is needed.
-  - **Cloud — OpenAI-compatible API** (future): any provider exposing an OpenAI-compatible `/v1/chat/completions` endpoint (OpenAI, Anthropic via proxy, Mistral, etc.) configurable via `--api-url` and `--api-key`
-- The RAG pipeline is identical regardless of backend — only the final LLM call differs
-
-### 5. CLI Frontend
-
-- Built with `clap`
-- Commands:
-  - `ask-ubuntu-docs ask "<question>"` — single-shot query
-  - `ask-ubuntu-docs chat` — interactive session
-  - `ask-ubuntu-docs index` — manually trigger re-indexing
-  - `ask-ubuntu-docs update` — pull latest docs
-- Renders answer in terminal, prints doc links as clickable file:// URIs
-
-### 6. GNOME Shell Search Provider (stretch)
-
-- Implements `org.gnome.Shell.SearchProvider2` D-Bus interface
-- Triggered by `??` or `ask:` prefix in GNOME overview search
-- Registered via a `.service` file for D-Bus autostart
-- Returns results as GNOME search result items; clicking opens the doc or a response window
-
-### 7. Agentic Layer (stretch)
-
-- Detects actionable intents in the user query (e.g. "change my wallpaper")
-- Presents proposed action to user and requests confirmation
-- Executes via `gsettings`, `gio`, D-Bus calls, or shell commands
-- Logs actions taken
 
 ---
 
 ## Key Dependencies
 
-| Purpose | Crate / Tool |
+| Purpose | Crate |
 |---|---|
-| CLI | `clap` |
-| Markdown parsing | `pulldown-cmark` |
-| Text chunking | `text-splitter` + `tokenizers` |
-| Embeddings | `fastembed` |
-| Vector search | brute-force cosine (in-memory, baked into binary) |
-| LLM (option A) | `llama-cpp-rs` |
-| LLM (option B) | Ollama HTTP API (`reqwest`) |
-| LLM (option C) | Canonical inference snap HTTP API |
-| GUI / GNOME bindings | `gtk-rs` (if GUI needed) |
-| D-Bus | `zbus` |
+| CLI argument parsing | `clap` (with `derive` and `env` features) |
+| GTK4 GUI | `gtk4`, `libadwaita` |
+| Markdown → Pango markup | `pulldown-cmark` |
+| Embeddings | `fastembed` (BGE-small-en-v1.5) |
+| Vector + hybrid search | `lancedb` |
+| Arrow data access | `arrow-array` |
+| HTTP (LLM API calls) | `reqwest` (with `json` and `stream` features) |
+| JSON serialisation | `serde`, `serde_json` |
+| TOML parsing (product prompts) | `toml` |
+| Async runtime | `tokio` |
+| Secret Service (keyring) | `secret-service` |
+| Progress spinner | `indicatif` |
 
 ---
 
-## Data Model
+## Snap Packaging
 
-### Vector DB record
-
-```
-{
-  id: uuid,
-  ubuntu_version: "24.04",
-  source_file: "how-to/change-wallpaper.md",
-  chunk_index: 3,
-  chunk_text: "...",
-  vector: [f32; N],
-  content_hash: "sha256:...",
-}
-```
-
-### LLM response
-
-```
-{
-  answer: String,
-  doc_links: Vec<(title: String, path: String)>,
-  clarifying_question: Option<String>,
-}
-```
-
----
-
-## Ubuntu Version Awareness
-
-- At startup, read `/etc/os-release` to determine the current Ubuntu version
-- Tag all indexed chunks with the detected version
-- Filter vector search by version tag
-- Future: allow the user to override the version (e.g. for testing or cross-version queries)
-
----
-
-## Non-Goals (for now)
-
-- A full GUI app (CLI first; GTK GUI is a future iteration)
-- Multi-user or networked deployments
-- Fine-tuning, RLHF, or feedback collection pipelines (noted as a future idea)
-- Support for languages other than English
+- **Base**: `core26`
+- **Confinement**: strict
+- **License**: GPL-3.0+
+- The `rag-index` snap part downloads the pre-built LanceDB index from the latest [ubuntu-docs-indexer](https://github.com/msuchane/ubuntu-docs-indexer) release and stages it at `$SNAP/index.lance`.
+- The `install` and `post-refresh` hooks copy the index to `$SNAP_COMMON/index.lance` so LanceDB can open it with write access for manifest tracking.
+- Key plugs: `network`, `home`, `password-manager-service`, `desktop`, `wayland`, `x11`, `opengl`.
 
 ---
 
 ## Constraints
 
-- Must work on laptops without a dedicated GPU
-- Prefer small models (e.g. TinyLlama, Phi-3-mini) for performance
-- All model downloads and DB writes go to user-local directories (no root required)
-- Snap packaging must be feasible (no hard dependencies on system Python or system libs)
+- Must work on laptops without a dedicated GPU (local models via Ollama; small models preferred)
+- All writable state goes to user-local directories (`$SNAP_USER_DATA`, `$SNAP_COMMON`)
+- No user-side indexing — the index is pre-built and shipped with the snap
 
 ---
 
-## Stretch Goal: LanceDB with Hybrid Search
+## Non-Goals
 
-### Context
+- GNOME Shell search provider integration (stretch goal)
+- Agentic actions (detecting user intent and performing system actions on their behalf — stretch goal)
+- Support for non-Ubuntu/non-GNOME desktops
+- General web search or crawling beyond official Ubuntu docs
+- Fine-tuning or training models
+- Multi-user or networked deployments
 
-The current implementation uses brute-force cosine similarity over a flat vector index baked into the binary at build time. This works well for conceptual queries but fails for exact-term queries (version numbers, release codenames) because cosine similarity is semantic — a chunk that literally says "Ubuntu 26.04 release notes" may score lower than a generic upgrade guide for the query "what's new in 26.04?".
+---
 
-The current workaround is a per-product score multiplier (1.1×) that nudges on-topic chunks forward. This is a heuristic that can be dropped once retrieval quality improves.
+## Stretch Goal: GNOME Shell Search Provider
 
-### Why LanceDB solves this
+Implement `org.gnome.Shell.SearchProvider2` D-Bus interface so the app responds to queries typed in the GNOME overview. Triggered by a `??` or `ask:` prefix. Registered via a `.service` file for D-Bus autostart.
 
-LanceDB bundles a **Tantivy-based BM25 full-text search engine** alongside vector search, and exposes a `hybrid_search()` API that combines both rankings with Reciprocal Rank Fusion (RRF). BM25 is term-frequency aware: a chunk containing "26.04" scores near the top of the keyword ranking for any query containing "26.04", regardless of cosine similarity. Combining vector and keyword rankings with RRF gives the best of both: semantic relevance for conceptual queries, exact-match reliability for version numbers and codenames.
+Requires `zbus` crate and a snap `dbus` or `unity7` plug for D-Bus access.
 
-With hybrid search delivering better intrinsic ranking, the per-product score multiplier becomes unnecessary and can be removed.
+---
 
-### Deployment model (build-time indexing is viable)
+## Stretch Goal: Agentic Layer
 
-The key constraint — **no user-side indexing** — is fully compatible with LanceDB:
+Detect actionable intents in the user query (e.g. "change my wallpaper"), present a proposed action for user confirmation, and execute it via `gsettings`, `gio`, D-Bus calls, or shell commands.
 
-1. **Build time** (`build.rs` or `snapcraft` build step): create a LanceDB dataset in `$OUT_DIR/index.lance/`, insert all chunks with their pre-computed vectors, and build the Tantivy FTS index. The complete `index.lance/` directory is a collection of immutable Apache Arrow fragment files — once written, no further computation is needed.
+---
 
-2. **Snap packaging**: stage `index.lance/` into `$SNAP/share/index.lance/`. It is a static read-only asset, like any other snap data file.
+## Stretch Goal: Rich Code Block Rendering
 
-3. **Runtime**: open the dataset from `$SNAP/share/`. The Lance format stores data as immutable fragments. LanceDB can open a dataset in read-only mode for search queries without writing to the source directory. If a specific LanceDB version requires write access for manifest tracking, the fallback is a one-time file copy from `$SNAP/share/` to `$SNAP_USER_DATA/` on first launch — this is pure file I/O (seconds), categorically different from the forbidden re-indexing operation (10+ minutes, 10 GB RAM).
+Replace the single `gtk::Label` per assistant response with a composite widget that renders fenced code blocks using GtkSourceView (`sourceview5` crate) with syntax highlighting and a "Copy" button. The `pulldown-cmark` event stream already distinguishes `Tag::CodeBlock(CodeBlockKind::Fenced(lang))` from inline code.
 
-### Potential benefits
-
-- **Hybrid search (BM25 + vector + RRF)** — reliable retrieval for both semantic and exact-term queries; eliminates the need for score multiplier heuristics
-- **Per-product and per-version SQL filtering** — `WHERE source LIKE '%desktop%'` as a pre-filter or post-filter; cleaner than score multiplication
-- **ANN indexing** — IVF/HNSW for approximate nearest-neighbour search; not needed at current scale but becomes relevant above ~100k vectors
-- **Incremental re-indexing** — add or remove chunks without rebuilding the entire index (useful if a CI pipeline ships index updates as snap refreshes)
-
-### Why it is not the current approach
-
-- **Build dependency weight.** LanceDB depends on Apache Arrow, DataFusion, and Tantivy, adding ~20–40 MB to the binary (or snap asset) and several minutes to cold compile times.
-- **No net gain at current scale for vector search.** Brute-force cosine over ~10k vectors takes microseconds; ANN provides no perceptible speedup.
-- **Hand-rolled hybrid search is sufficient short-term.** A simple keyword-overlap + RRF implementation in ~80 lines of Rust (no new dependencies) addresses the exact-term query failure adequately while the codebase is still small.
-
-### When it would become worthwhile
-
-When the corpus grows beyond ~5 repositories (index > ~150 MB), making the embedded binary approach impractical, LanceDB becomes the natural replacement: the index moves to a snap asset, hybrid search replaces the score multiplier, and filtering replaces the per-product boost. The transition is clean because the index format changes but the surrounding pipeline (`build.rs` → snap → runtime open) does not.
+Requires `sourceview5` crate and `libgtksourceview-5-0` snap stage-package.
 
 ---
 
 ## Stretch Goal: Index as a Content Snap
 
-### Context
+Publish the LanceDB index as a separate content snap (`ubuntu-help-index`) rebuilt by CI whenever any upstream documentation repository receives a commit. The main snap connects via the `content` interface, decoupling documentation update cadence from app release cadence.
 
-Ubuntu documentation updates frequently — new releases, backports, and policy changes land on a rolling basis. With the current model the index is baked into the snap at build time, so users only get updated documentation when the entire snap is rebuilt and refreshed. For a frequently-changing corpus this is an unacceptably long feedback loop.
-
-### Proposed approach
-
-Publish the LanceDB index as a **separate content snap** (`ubuntu-help-index`). The main snap connects to it via the `content` interface:
-
-```yaml
-# Main snap (ask-ubuntu-docs)
-plugs:
-  help-index:
-    interface: content
-    content: rag-index
-    target: $SNAP/index
-
-apps:
-  ask-ubuntu-docs:
-    environment:
-      UBUNTU_HELP_INDEX_PATH: $SNAP/index/index.lance
-    plugs: [help-index]
-```
-
-```yaml
-# Index snap (ubuntu-help-index)
-slots:
-  help-index:
-    interface: content
-    content: rag-index
-    read:
-      - $SNAP/index.lance
-
-parts:
-  index:
-    plugin: nil
-    override-build: |
-      # Clone docs, embed, create LanceDB index
-      ...
-      cp -r index.lance $CRAFT_PART_INSTALL/index.lance
-```
-
-The index snap is rebuilt and published by a CI job that runs whenever any upstream documentation repository receives a commit. Users get fresh documentation within hours of it being published, without waiting for a binary snap release.
-
-### Key properties
-
-- **Decoupled release cadence** — docs update independently of the app binary; CI for each docs repo triggers an index snap rebuild
-- **Smaller main snap** — the `index.lance/` directory (currently tens of MB, growing with corpus) moves entirely out of the main snap
-- **No user-side indexing** — the content snap is pre-built; users just install it, same guarantee as today
-- **Graceful degradation** — if the index snap is not connected, the app falls back to an empty index and answers questions without RAG context, rather than failing
-
-### When to implement
-
-When documentation update latency becomes a user-visible problem, or when the index directory grows large enough to make main snap refresh times unacceptable (roughly above 100 MB, which corresponds to ~5–6 repositories of current size).
-
-### Required prerequisite: standalone indexer binary
-
-Before either the content snap or runtime download approach can work, the indexing logic must be extracted from `build.rs` into a standalone `ubuntu-help-indexer` binary. This is the enabling step for all index-decoupling options.
-
-**Target structure:**
-
-```
-src/
-  bin/
-    ubuntu-help-indexer.rs   ← new: all indexing logic lives here
-  vectordb.rs                ← unchanged: reads index, doesn't write it
-build.rs                     ← reduced to: create empty schema-only table for dev builds
-```
-
-The indexer binary is a thin `clap` wrapper around the functions currently in `build.rs` (doc cloning, markdown chunking, fastembed embedding, LanceDB table creation):
-
-```
-ubuntu-help-indexer [--docs-dir <path>] --output <path>
-```
-
-It clones or updates the documentation repos under `--docs-dir`, chunks and embeds them, and writes the resulting `index.lance/` directory to `--output`. It is the only component that depends on `fastembed` and the Arrow write path — the main app binary drops those dependencies entirely.
-
-**CI workflow (content snap):**
-
-```
-docs repo commit → CI runs ubuntu-help-indexer → snapcraft packs index snap → snap store refresh
-```
-
-**CI workflow (runtime download):**
-
-```
-docs repo commit → CI runs ubuntu-help-indexer → tarballs index.lance/ → uploads to CDN
-app checks for update on startup → downloads → atomically replaces $SNAP_USER_DATA/index.lance/
-```
-
-In both cases `src/vectordb.rs` is unchanged — it reads from whatever path `index_path()` resolves to and does not care who wrote the index.
-
----
-
-## Stretch Goal: External Index File (mmap)
-
-As more documentation sources are added, binary size and build-time RAM grow linearly: roughly 15 MB of index and 10 GB of peak build RAM per repository of similar size. Beyond ~5 repositories the embedded approach becomes impractical.
-
-### Proposed approach
-
-Move the vector index out of the binary and into a separate `index.bin` file shipped alongside it (e.g. at `/snap/ask-ubuntu-docs/current/share/index.bin`). At runtime, map the file into the process address space using `memmap2` instead of loading it into heap-allocated RAM.
-
-**Key properties of the mmap approach:**
-
-- **Fixed binary size** (~37 MB regardless of how many repositories are indexed)
-- **Lazy page loading** — the OS only loads vector pages that are actually touched during a search query; for brute-force top-k search over a large index the working set stays in the hundreds of MB rather than the full index size
-- **No change to build time** — the index is still generated by `build.rs` using the same pipeline; it is just staged as a separate file in the snap rather than embedded
-- **Same index format** — the binary format already written by `build.rs` is suitable for mmap access without modification; vectors are stored as contiguous `f32` arrays, which can be sliced directly from the mapped memory without deserialisation
-
-**Implementation sketch:**
-
-```rust
-// At startup
-let file = File::open(index_path)?;
-let mmap = unsafe { MmapOptions::new().map(&file)? };
-// Parse header (dim, n_chunks) from mmap[0..16]
-// Hold slices into the mmap for each vector — no heap allocation per vector
-```
-
-**Snap packaging change:** The index file must be generated during `snapcraft` build and staged into the snap prime directory. The snap `layout` stanza or a hardcoded read path under `$SNAP` handles the runtime lookup.
-
-### When to implement
-
-This becomes worthwhile when the index exceeds ~150 MB (roughly 5 repositories of current size) or when the binary size limit of the Snap Store becomes a concern.
-
----
-
-## Stretch Goal: Rich Code Block Rendering in GUI
-
-### Context
-
-The current GUI renders assistant Markdown responses by converting them to Pango markup (`pulldown-cmark` → `gtk::Label::set_markup()`). This handles bold, italic, inline code, headings, lists, and links well. However, fenced code blocks are rendered as plain monospace text inside `<tt>` tags — no syntax highlighting, no visual separation from prose, and no copy button.
-
-### Proposed approach
-
-Replace the single `gtk::Label` per assistant response with a composite `gtk::Box` containing alternating widgets:
-
-- **Prose segments** — `gtk::Label` with Pango markup, as today
-- **Code block segments** — a dedicated widget built from:
-  - `gtk::Frame` or a CSS-styled `gtk::Box` with a distinct background
-  - `sourceview5::View` (GtkSourceView) with syntax highlighting language auto-detected from the fenced code block info string (e.g. `rust`, `bash`, `yaml`)
-  - A "Copy" button in the top-right corner (`gtk::Button` overlaid via `gtk::Overlay`)
-
-The `pulldown-cmark` event stream already distinguishes `Tag::CodeBlock(CodeBlockKind::Fenced(lang))` from inline code, so the split point is clean.
-
-### Dependencies
-
-- `sourceview5` crate + `libgtksourceview-5-dev` / `libgtksourceview-5-0` system packages
-- Additional snap stage-package: `libgtksourceview-5-0`
-
-### When to implement
-
-When the LLM backend is wired up and real responses are flowing through the GUI, making code block quality visible and worth the added complexity.
-
----
-
-## Stretch Goal: LLM-Based Query Rewriting
-
-### Problem
-
-The current approach to follow-up question disambiguation (Option A) prepends the **last assistant reply** to the RAG search query before embedding. This handles most ambiguous follow-ups ("how do I install it?") by giving the retriever enough context to find the right topic.
-
-It has two limitations:
-1. The previous assistant reply can be long (several paragraphs), which dilutes the embedding and may push the actual question out of the high-similarity region.
-2. It does not work well when the relevant context is more than one turn back (e.g. a three-step thread where the topic was established two turns ago).
-
-### Proposed approach (Option C)
-
-Before performing RAG retrieval, send a lightweight LLM call to **rewrite the current user query into a standalone, self-contained question** that a retriever could answer without any conversation history.
-
-```
-System: You are a query rewriting assistant. Given a conversation history and a new user message, rewrite the user message into a single, self-contained question that can be answered without any prior context. Output only the rewritten question, nothing else.
-
-History:
-  User: what's zig?
-  Assistant: Zig is a programming language...
-
-New message: how do i install it?
-
-→ How do I install the Zig programming language?
-```
-
-The rewritten query replaces the original for RAG embedding and BM25 search only. The original user message is still what gets sent to the main LLM and stored in conversation history.
-
-### Trade-offs
-
-| | Option A (current) | Option C (this goal) |
-|---|---|---|
-| Latency | None (no extra LLM call) | +1 fast LLM round-trip per turn |
-| Quality on simple follow-ups | Good | Excellent |
-| Quality on multi-turn threads | Degrades after 2+ turns | Consistent |
-| Complexity | Minimal | Requires second LLM client call |
-| Offline friendliness | Full | Requires model capable of instruction following (already required for main call) |
-
-### Implementation notes
-
-- Use a small, fast model for rewriting (e.g. same Ollama model as the main call; the task is trivial)
-- Only rewrite when `history` is non-empty; if it is the first turn, skip the rewrite and embed directly
-- The rewrite call is fire-and-forget with a short timeout (e.g. 3 s); if it fails or times out, fall back to Option A gracefully
-- The rewrite prompt and timeout should be configurable constants, not hardcoded magic strings
-
-### When to implement
-
-After Option A proves insufficient in practice — i.e. when users report that multi-turn follow-ups still retrieve wrong documentation despite the previous-reply prefix.
-
----
-
-## Stretch Goal: CI-Generated Documentation Index
-
-### Problem
-
-Generating the RAG index (`index.lance`) is the most expensive part of the snap build: it clones multiple documentation repositories, chunks and embeds every document using a neural embedding model (~130 MB of weights downloaded from HuggingFace), and writes a LanceDB database. This makes snap builds slow and means every clean build environment must repeat the work.
-
-Observed resource requirements on a developer machine: **≥10 GB RAM** during embedding. This is a hard constraint for CI runner selection.
-
-### Proposed solution
-
-Move index generation out of `build.rs` into a dedicated GitHub Actions workflow. The workflow publishes the resulting index as a downloadable artifact (e.g. a GitHub Release asset or Actions artifact). The snap build then downloads the pre-built index instead of regenerating it.
-
-### Runner requirements
-
-Standard GitHub Actions runners (`ubuntu-latest`) provide only **7 GB RAM**, which is insufficient. The indexing job requires a runner with at least 10 GB RAM. Options:
-
-- **GitHub larger runners** — 4-core/16 GB runners, available on Team/Enterprise plans or as pay-per-use on public repos
-- **Self-hosted runners** — on developer or Canonical-owned hardware with sufficient memory
-- **Canonical internal CI** — if this becomes an official Canonical project
-
-This is a blocking constraint: the CI approach is only viable if an adequately resourced runner is available.
-
-### Workflow outline
-
-1. **Index generation job** — triggered on changes to `docs.toml`, `build.rs`, or on a weekly schedule; requires a ≥16 GB RAM runner:
-   - Install build dependencies (`protobuf-compiler`, `libprotobuf-dev`)
-   - Cache HuggingFace model weights (`~/.cache/huggingface`) between runs
-   - `cargo build --release` (which runs `build.rs` and produces `index.lance`)
-   - Upload `index.lance` as a release asset or Actions artifact
-
-2. **Snap build job** — downloads the pre-built index artifact, sets `UBUNTU_HELP_INDEX_PATH`, then runs `snapcraft`
-
-### Trade-offs
-
-| | Current (build.rs) | CI-generated index |
-|---|---|---|
-| Snap build time | Slow (full embed on every build) | Fast (download only) |
-| Index freshness | Always up-to-date with source | Depends on trigger schedule |
-| Complexity | Low | Moderate (two-job pipeline + runner provisioning) |
-| Offline snap builds | Works | Requires artifact download |
-| Clean environment cost | High (re-embeds every time) | Low |
-| Runner requirements | Any machine with ≥10 GB RAM | CI runner with ≥10 GB RAM (non-standard) |
-
-### When to implement
-
-When snap build times become a bottleneck and a suitably resourced CI runner is available.
+When to implement: when index update latency becomes user-visible, or when the index grows large enough to make main snap refresh times unacceptable (roughly above 100 MB).

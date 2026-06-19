@@ -9,11 +9,10 @@
 ## Language & Toolchain
 
 - **Language**: Rust (stable, latest stable toolchain via `rustup`)
-- **Minimum Rust edition**: 2021
+- **Rust edition**: 2024
 - **Package manager**: Cargo
 - **Formatter**: `rustfmt` (run before committing)
 - **Linter**: `clippy` (zero warnings policy on new code)
-- **Documentation**: Always comment your code, at least one comment per code block. Explain your reasoning shortly. Assume that the reader only has very basic Rust knowledge.
 
 ```bash
 rustup update stable
@@ -27,64 +26,27 @@ cargo clippy --all-targets --all-features -- -D warnings
 
 ```
 ask-ubuntu-docs/
-├── spec.md               # What the app is (keep in context)
-├── agent.md              # This file
-├── Cargo.toml            # Workspace root
+├── spec.md                   # What the app is (keep in context)
+├── agent.md                  # This file
+├── Cargo.toml                # Single-crate package
 ├── Cargo.lock
-├── crates/
-│   ├── cli/              # CLI frontend (clap)
-│   ├── indexer/          # Doc syncing, chunking, embedding, LanceDB writes
-│   ├── query/            # Vector search + LLM prompt construction
-│   ├── llm/              # LLM backend abstraction (ollama / llama-cpp / inference snap)
-│   └── search-provider/  # GNOME Shell D-Bus search provider (stretch)
-├── docs-cache/           # Gitignored; local clone of Ubuntu docs
-├── tests/
-│   ├── integration/
-│   └── fixtures/         # Small sample .md files for tests
+├── cli-system-prompt.md      # System prompt embedded at compile time
+├── product-prompts.toml      # Per-product system prompt additions, embedded at compile time
+├── src/
+│   ├── main.rs               # Entry point; clap CLI definition (subcommands: chat, gui)
+│   ├── cli.rs                # Interactive terminal chat loop
+│   ├── gui.rs                # GTK4 / libadwaita graphical interface
+│   ├── conversation.rs       # Conversation history + RAG-augmented message assembly
+│   ├── llm.rs                # LLM backends: OllamaClient, CopilotClient, LlmClient enum
+│   ├── vectordb.rs           # LanceDB RAG store: load, embed, hybrid search
+│   ├── markdown.rs           # Markdown → Pango markup conversion for GTK labels
+│   └── prompts.rs            # Loads product-prompts.toml; returns per-product system prompt
 └── snap/
-    └── snapcraft.yaml    # Snap packaging config
-```
-
-Use a Cargo workspace so crates can be developed and tested independently.
-
----
-
-## Key Crates
-
-Add these to the relevant `Cargo.toml` files:
-
-```toml
-# Parsing & chunking
-pulldown-cmark = "0.11"
-text-splitter = { version = "0.14", features = ["markdown", "tiktoken-rs"] }
-
-# Embeddings
-fastembed = "3"
-
-# Vector DB
-lancedb = "0.8"
-arrow-array = "51"        # LanceDB uses Arrow under the hood
-
-# LLM (Ollama path — start here)
-reqwest = { version = "0.12", features = ["json"] }
-serde = { version = "1", features = ["derive"] }
-serde_json = "1"
-
-# CLI
-clap = { version = "4", features = ["derive"] }
-
-# D-Bus (search provider stretch)
-zbus = "4"
-
-# Async runtime
-tokio = { version = "1", features = ["full"] }
-
-# Utilities
-uuid = { version = "1", features = ["v4"] }
-sha2 = "0.10"
-anyhow = "1"
-tracing = "0.1"
-tracing-subscriber = "0.3"
+    ├── snapcraft.yaml        # Snap packaging (base: core26, strict confinement)
+    ├── hooks/
+    │   ├── install           # Copies index.lance from $SNAP to $SNAP_COMMON on install
+    │   └── post-refresh      # Same, runs after snap refresh
+    └── gui/                  # Desktop entry / GUI launcher assets
 ```
 
 ---
@@ -92,91 +54,109 @@ tracing-subscriber = "0.3"
 ## Build & Run
 
 ```bash
-# Build everything
+# Build
 cargo build
 
-# Run the CLI
-cargo run -p cli -- ask "How do I change my wallpaper?"
+# Run the graphical interface with GitHub Copilot
+cargo run gui --copilot
 
-# Run in interactive chat mode
-cargo run -p cli -- chat
+# Run the terminal chat with GitHub Copilot
+cargo run chat --copilot
 
-# Trigger manual re-index
-cargo run -p cli -- index
+# Run the graphical interface with a local Ollama model
+cargo run gui --model deepseek-r1:1.5b
 
-# Pull latest docs
-cargo run -p cli -- update
+# Run the terminal chat with a local Ollama model
+cargo run chat --model deepseek-r1:1.5b
 ```
+
+For dev builds, the app expects the LanceDB index at `target/index.lance`. Download a pre-built index from the [ubuntu-docs-indexer releases](https://github.com/msuchane/ubuntu-docs-indexer/releases), unpack it, and place it at `target/index.lance`. Or set `UBUNTU_HELP_INDEX_PATH` to any path.
 
 ---
 
-## Environment & Config
+## CLI Flags & Environment Variables
 
-The app reads config from `~/.config/ask-ubuntu-docs/config.toml` (created with defaults on first run).
+All flags are defined in `src/main.rs` via `clap`.
 
-```toml
-[docs]
-repo_url = "https://github.com/canonical/ubuntu-desktop-documentation"
-local_path = "~/.local/share/ask-ubuntu-docs/docs"
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--model <name>` | `MODEL` | `deepseek-r1:1.5b` (Ollama) / `gpt-4o-mini` (Copilot) | Model name |
+| `--copilot` | — | off | Use GitHub Models API instead of Ollama |
+| `--ollama-url <url>` | `OLLAMA_URL` | `http://localhost:11434` | Ollama server base URL |
 
-[embedding]
-model = "BAAI/bge-small-en-v1.5"   # downloaded by fastembed on first run
-
-[llm]
-backend = "ollama"                  # "ollama" | "llama-cpp" | "inference-snap"
-ollama_url = "http://localhost:11434"
-model = "phi3:mini"
-
-[search]
-top_k = 5
-```
-
-The Ubuntu version is detected automatically from `/etc/os-release` and is not stored in config.
+`--model` and `--copilot` are global flags (work with both `chat` and `gui` subcommands).
+`--ollama-url` is subcommand-level (present on both `chat` and `gui`).
 
 ---
 
-## Development Sequence
+## Index Path Resolution
 
-Work in this order. Don't move to the next step until the current one produces observable output.
+`src/vectordb.rs` resolves the LanceDB index path in this order:
 
-1. **Indexer — basic pipeline**
-   - Clone docs repo to `docs-cache/`
-   - Walk `.md` files, parse with `pulldown-cmark`, extract plain text
-   - Chunk with `text-splitter`
-   - Embed with `fastembed`
-   - Write to LanceDB table with schema from `spec.md`
-   - Print chunk count and a sample vector to confirm it works
+1. `UBUNTU_HELP_INDEX_PATH` env var — explicit override (dev, CI, snap)
+2. `$SNAP_USER_DATA/index.lance` — written by the install/post-refresh hook
+3. `$SNAP/index.lance` — read-only fallback baked into the snap
+4. `target/index.lance` — dev build fallback (relative to `CARGO_MANIFEST_DIR`)
 
-2. **Query engine — retrieval**
-   - Embed a hardcoded test query
-   - Search LanceDB, print top-5 chunks + source paths
-   - Confirm semantic relevance by inspection
+---
 
-3. **LLM interface — Ollama**
-   - Start with Ollama (easiest HTTP API, good for dev)
-   - POST query + retrieved chunks to Ollama `/api/chat`
-   - Parse and print the response
-   - Confirm the answer references the retrieved content
+## GitHub Token Resolution (Copilot mode)
 
-4. **CLI — wire it together**
-   - Implement `ask` subcommand end-to-end
-   - Implement `chat` for multi-turn sessions (maintain message history in memory)
-   - Add `index` and `update` subcommands
+`src/llm.rs` (`CopilotClient::create`) tries three sources in order:
 
-5. **Ubuntu version filtering**
-   - Read `/etc/os-release`
-   - Tag chunks at index time; filter at query time
-   - Test with a fixture that has version-specific content
+1. `COPILOT_TOKEN` env var — use directly
+2. GNOME Keyring / KWallet via Secret Service (`service=gh:github.com`) — works in snaps with the `password-manager-service` plug
+3. `gh auth token` CLI — last resort; requires the GitHub CLI to be installed and authenticated
 
-6. **GNOME Shell search provider** *(stretch)*
-   - Implement `org.gnome.Shell.SearchProvider2` with `zbus`
-   - Register `.service` file
-   - Test `??` prefix trigger in GNOME overview
+---
 
-7. **Agentic layer** *(stretch)*
-   - Detect actionable intents via LLM classification
-   - Propose action to user (confirm/deny)
-   - Execute via `gsettings` / D-Bus
+## Key Source Files
+
+`main.rs`
+: Parses CLI args with `clap`, dispatches to `cli::run` or `gui::run`. Both share the same `LlmClient` and `RagStore`.
+
+`conversation.rs`
+: `Conversation` struct: stores bare user/assistant turn history (no RAG chunks). Builds the augmented user message (docs context + question) for each LLM call. Prepends the last assistant reply to the RAG query to handle follow-up questions.
+
+`llm.rs`
+: `OllamaClient` (NDJSON streaming), `CopilotClient` (SSE streaming via `models.github.ai`). Both expose `chat()` (stdout) and `chat_streaming()` (callback). Unified `LlmClient` enum dispatches to either.
+
+`vectordb.rs`
+: `RagStore`: loads a LanceDB table, initialises the BGE-small-en-v1.5 embedder, provides `embed()` and `search_with_vec()` (hybrid BM25 + vector, top 12 chunks).
+
+`gui.rs`
+: GTK4 + libadwaita chat UI. Product selector dropdown maps to per-product system prompts. Streams tokens into the chat view via `chat_streaming()` and an async channel.
+
+`cli.rs`
+: Line-by-line stdin loop. Shows a spinner until the first token, then streams tokens to stdout.
+
+`prompts.rs`
+: Loads `product-prompts.toml` at compile time via `include_str!`. `get_prompt(product)` returns the system-prompt addition for the selected product.
+
+`markdown.rs`
+: Converts Markdown to Pango markup for `gtk::Label::set_markup()`.
+
+---
+
+## GUI ↔ CLI Feature Parity
+
+The GUI (`src/gui.rs`) and the CLI (`src/cli.rs`) share the same backend logic (RAG, LLM, conversation history). **Whenever you change the behaviour of one interface, apply the equivalent change to the other** — unless the change is genuinely interface-specific (e.g. a widget layout tweak or a terminal escape code).
+
+Concretely:
+- A bug fixed in the CLI chat loop should also be fixed in the GUI message-send handler, and vice versa.
+- A new feature (e.g. RAG query contextualisation, history trimming, model selection) must land in both.
+- If the change truly cannot be applied to the other interface, leave a `// TODO(parity):` comment explaining why.
+
+---
+
+## Snap Packaging Notes
+
+- Base: `core26`
+- Confinement: `strict`
+- The `rag-index` snap part downloads the pre-built LanceDB index from the latest [ubuntu-docs-indexer](https://github.com/msuchane/ubuntu-docs-indexer) release at snap build time and stages it at `$SNAP/index.lance`.
+- The `install` and `post-refresh` hooks copy the index to `$SNAP_COMMON/index.lance` (writable) so LanceDB can open it.
+- The snap sets `UBUNTU_HELP_INDEX_PATH=$SNAP_COMMON/index.lance` in the app environment.
+- Key plugs: `network`, `home`, `password-manager-service` (GNOME Keyring), `desktop`, `wayland`, `x11`, `opengl`.
 
 ---
 
@@ -185,120 +165,34 @@ Work in this order. Don't move to the next step until the current one produces o
 ```bash
 # Unit tests
 cargo test --all
-
-# Integration tests (require Ollama running locally)
-DESKTOP_HELP_TEST_INTEGRATION=1 cargo test -p query --test integration
 ```
 
-### Test fixtures
-
-Put small, self-contained `.md` files in `tests/fixtures/`. Tests should not depend on the real docs repo being present.
-
-### What to test
-
-- Chunking produces non-empty, bounded chunks
-- Embedding round-trips (embed → store → retrieve returns same chunk)
-- Query returns results ranked by cosine similarity
-- Version filter excludes chunks from wrong Ubuntu version
-- LLM prompt is well-formed (test prompt construction without calling the LLM)
-- CLI `ask` exits 0 on valid input, non-zero on missing config
+There are currently no integration tests. When adding them, gate them behind an env var (e.g. `INTEGRATION_TESTS=1`) since they require Ollama or network access.
 
 ---
 
-## LLM Prompt Template
+## Code Style
 
-Keep prompt construction in one place (`crates/query/src/prompt.rs`).
-
-```
-System:
-You are a helpful assistant for Ubuntu users.
-Answer the user's question using only the documentation excerpts provided below.
-If the answer is not in the excerpts, say so clearly.
-If the question is ambiguous, ask one clarifying question.
-Always cite the source document for any claim.
-
-Documentation excerpts:
-{chunks}
-
-User question:
-{query}
-```
-
----
-
-## Ollama Setup (local dev)
-
-```bash
-# Install Ollama
-curl -fsSL https://ollama.com/install.sh | sh
-
-# Pull a small model
-ollama pull phi3:mini
-
-# Confirm it's running
-curl http://localhost:11434/api/tags
-```
-
-For CI or machines without Ollama, mock the LLM layer via a trait + test double.
-
----
-
-## LLM Backend Abstraction
-
-Define a trait in `crates/llm/src/lib.rs` so backends are swappable:
-
-```rust
-#[async_trait]
-pub trait LlmBackend: Send + Sync {
-    async fn complete(&self, prompt: &str) -> anyhow::Result<String>;
-}
-```
-
-Implement `OllamaBackend`, `LlamaCppBackend`, and a `MockBackend` for tests. The CLI selects the backend from config.
-
----
-
-## Snap Packaging Notes
-
-- Target `core24` base
-- Use `rustup` plugin or pre-built binary stage
-- Bundle fastembed model in the snap (download at build time, include in `stage`)
-- LLM options:
-  - `llama-cpp` plugin: self-contained, no external services needed — **preferred for packaging**
-  - Ollama as a content snap interface: cleaner model management, requires Ollama snap installed
-- Store docs-cache and LanceDB in `$SNAP_USER_DATA`
-
----
-
-## Code Style Notes for Agents
-
-- Use `anyhow::Result` for error propagation throughout; avoid `.unwrap()` outside tests
-- Use `tracing` for logging (`tracing::info!`, `tracing::debug!`); never `println!` in library crates
-- Keep each crate focused on one responsibility (see repo layout above)
-- Prefer iterators and `?`-propagation over explicit loops and match chains where idiomatic
-- Do not add new dependencies without checking they compile in a no-std or snap-constrained context first
-- Avoid generating large blocks of commented-out code
-- When in doubt, refer back to `spec.md` before adding new behaviour
-
-### GUI ↔ CLI feature parity
-
-The GUI (`src/gui.rs`) and the CLI (`src/main.rs`) share the same backend logic (RAG, LLM, history). **Whenever you change the behaviour of one interface, apply the equivalent change to the other** — unless the change is genuinely interface-specific (e.g. a widget layout tweak, or a terminal escape code). The only thing that should differ between the two is how input is gathered and output is displayed.
-
-Concretely:
-- A bug fixed in `run_chat()` should also be fixed in the GUI's message-send handler, and vice versa.
-- A new feature (e.g. RAG query contextualisation, history trimming, model selection) must land in both.
-- If the change truly cannot be applied to the other interface, leave a `// TODO(parity):` comment explaining why.
+- Use `anyhow::Result` for error propagation; avoid `.unwrap()` outside tests
+- Always comment code to explain *why*, not just *what*; assume the reader has basic Rust knowledge. Add at least one comment per code block.
+- Keep each module focused on one responsibility (see source file list above)
+- Prefer iterators and `?`-propagation over explicit loops and match chains
+- Do not add new dependencies without checking they compile in a snap-constrained context
 
 ---
 
 ## System Package Dependencies
 
-This project requires certain system packages (e.g. `protobuf-compiler` for LanceDB's `lance-encoding` crate).
-**Agents do not have `sudo` access.** If a build fails because a system package is missing, stop and ask the user to install it:
+This project requires system packages for building. **Agents do not have `sudo` access.** If a build fails due to a missing system package, stop and ask the user to install it:
 
-```
+```bash
 sudo apt-get install -y <package-name>
 ```
 
 Known required packages:
-- `protobuf-compiler` — required by `lance-encoding` (transitive LanceDB dependency)
+- `libgtk-4-dev` — GTK4 development headers
+- `libadwaita-1-dev` — libadwaita development headers
+- `pkg-config` — used by build scripts to locate system libraries
+- `libssl-dev` — TLS support for reqwest
+- `g++` — provides libstdc++ required by LanceDB/ORT native deps
+- `protobuf-compiler` + `libprotobuf-dev` — required by `lance-encoding` (transitive LanceDB dep)
