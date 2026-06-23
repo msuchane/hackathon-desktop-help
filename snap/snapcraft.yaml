@@ -31,6 +31,13 @@ apps:
       - wayland
       - x11
       - opengl
+      - dbus-session-bus
+
+slots:
+  dbus-session-bus:
+    interface: dbus
+    bus: session
+    name: com.canonical.AskUbuntuDocs
 
 parts:
   ask-ubuntu-docs:

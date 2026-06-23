@@ -12,7 +12,7 @@ use crate::markdown;
 use crate::prompts;
 use crate::vectordb::{RagStore, TOP_K};
 
-const APP_ID: &str = "com.canonical.UbuntuDesktopHelp";
+const APP_ID: &str = "com.canonical.AskUbuntuDocs";
 const PRODUCTS: &[&str] = &["Desktop", "Server", "Core", "WSL", "Flavors"];
 
 pub fn run(
